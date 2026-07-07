@@ -1,0 +1,24 @@
+{
+  "name": "kpi-scorecard-generator",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Rep and territory KPI scorecard generator for managed print / office tech sales operations. Ingests mock or real HubSpot-style CRM exports (CSV/Excel) and renders quota and pipeline scorecards with AI-generated performance reads.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.383.0",
+    "papaparse": "^5.4.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.1"
+  }
+}
