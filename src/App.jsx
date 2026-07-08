@@ -1111,6 +1111,34 @@ export default function App() {
   const activities = source === "mock" ? mockActivities : source === "upload" ? uploadedActivities : [];
   const roster = source === "manual" ? manualRoster : [];
 
+  // Whenever the mock tab is active, make sure mock reps have their sample Actual Sales
+  // filled in. A rep counts as "not yet populated" if every period/category is 0 — covers
+  // both a first-ever visit and a browser that already has stale/zeroed data saved from
+  // before this feature existed. Reps the user has actually entered numbers for are left alone.
+  React.useEffect(() => {
+    if (source !== "mock") return;
+    setActualMatrix((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      mockRoster.forEach((r) => {
+        const current = next[r.displayName];
+        const isEmpty = !current || QUOTA_PERIODS.every((p) => {
+          const c = (current && current[p.key]) || {};
+          return (c.netNew || 0) + (c.software || 0) + (c.imaging || 0) === 0;
+        });
+        if (isEmpty) {
+          const seeded = mockData.actualMatrix[r.originalName];
+          if (seeded) {
+            next[r.displayName] = cloneMatrix(seeded);
+            changed = true;
+          }
+        }
+      });
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, mockRoster]);
+
   // Renaming/re-territorying works the same way regardless of which data source is active.
   const renameRepGlobal = (oldName, newName) => {
     if (!newName || newName === oldName) return;
@@ -1577,8 +1605,27 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
             for that period. Doesn't touch the scorecards, forecast, or breakdowns below, which stay
             driven by actual deal records. */}
         <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
-          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
-            Actual Sales (Manual Entry)
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink }}>
+              Actual Sales (Manual Entry)
+            </div>
+            {source === "mock" && (
+              <button
+                onClick={() => {
+                  setActualMatrix((prev) => {
+                    const next = { ...prev };
+                    mockRoster.forEach((r) => {
+                      const seeded = mockData.actualMatrix[r.originalName];
+                      if (seeded) next[r.displayName] = cloneMatrix(seeded);
+                    });
+                    return next;
+                  });
+                }}
+                style={{ background: "none", border: `1px solid ${COLORS.steel}`, color: COLORS.steel, borderRadius: 4, padding: "5px 10px", fontSize: 12, cursor: "pointer" }}
+              >
+                Reset to mock sample data
+              </button>
+            )}
           </div>
           <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
             Type in what a rep actually sold, by period and category — this is now the strict source of truth for "sold" everywhere in the app: the scorecard gauges, forecast, coverage ratio, Rep Performance chart, and Closed-Won Breakdown all use these numbers, not deal records. Mock data pre-populates this grid so it's usable right away; edit any cell freely. A rep/period left at 0 shows as 0 sold — nothing falls back to a calculated deal total. Win rate, avg deal cycle, deal count, pipeline, and cross-sell/upsell rate still come from deal records, since those need deal-level detail this grid doesn't capture.
