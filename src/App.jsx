@@ -32,15 +32,28 @@ const CATEGORIES = [
   { key: "software", label: "Software Solutions" },
   { key: "imaging", label: "Imaging" },
 ];
-const DEFAULT_CATEGORY_QUOTA = { netNew: 50000, software: 30000, imaging: 80000 };
-// A rep's period quota target — set once at the start of the year, independent of what
-// they've actually sold and independent of the category split above.
-const DEFAULT_PERIOD_QUOTA = { monthly: 15000, quarterly: 45000, annual: 180000 };
 const QUOTA_PERIODS = [
   { key: "monthly", label: "Monthly" },
   { key: "quarterly", label: "Quarterly" },
   { key: "annual", label: "Annual" },
 ];
+const DEFAULT_CATEGORY_QUOTA = { netNew: 50000, software: 30000, imaging: 80000 };
+// Full quota matrix: assigned once at the start of the year, per period, per category —
+// independent of what a rep has actually sold. Annual drives the scorecard gauges/forecast;
+// all three periods are editable and feed the Rep Performance chart via the period picker.
+const DEFAULT_QUOTA_MATRIX = {
+  monthly: { netNew: 4200, software: 2500, imaging: 6700 },
+  quarterly: { netNew: 12600, software: 7500, imaging: 20000 },
+  annual: { netNew: 50000, software: 30000, imaging: 80000 },
+};
+const EMPTY_ACTUAL_MATRIX = {
+  monthly: { netNew: 0, software: 0, imaging: 0 },
+  quarterly: { netNew: 0, software: 0, imaging: 0 },
+  annual: { netNew: 0, software: 0, imaging: 0 },
+};
+function cloneMatrix(m) {
+  return { monthly: { ...m.monthly }, quarterly: { ...m.quarterly }, annual: { ...m.annual } };
+}
 
 // ---------- Mock HubSpot-style data ----------
 const REPS = [
@@ -100,14 +113,19 @@ function generateMockData() {
   const rnd = seededRandom(42);
   const deals = [];
   const activities = [];
-  const quotas = {};
+  const quotaMatrix = {};
   let dealId = 1;
 
   REPS.forEach((rep) => {
-    quotas[rep.name] = {
+    const annual = {
       netNew: 55000 + Math.floor(rnd() * 20000),
       software: 35000 + Math.floor(rnd() * 15000),
       imaging: 95000 + Math.floor(rnd() * 35000),
+    };
+    quotaMatrix[rep.name] = {
+      annual,
+      quarterly: { netNew: Math.round(annual.netNew / 4), software: Math.round(annual.software / 4), imaging: Math.round(annual.imaging / 4) },
+      monthly: { netNew: Math.round(annual.netNew / 12), software: Math.round(annual.software / 12), imaging: Math.round(annual.imaging / 12) },
     };
     const repAccounts = sampleWithoutReplacement(ACCOUNT_POOL, 6 + Math.floor(rnd() * 4), rnd);
     const dealCount = 16 + Math.floor(rnd() * 12);
@@ -152,7 +170,7 @@ function generateMockData() {
     activities.push({ rep: rep.name, territory: rep.territory, count: activityCount });
   });
 
-  return { deals, activities, quotas };
+  return { deals, activities, quotaMatrix };
 }
 
 // ---------- File parsing helpers ----------
@@ -712,7 +730,8 @@ function saveToLocalStorage(state) {
   try {
     const serializable = {
       source: state.source,
-      quotas: state.quotas,
+      quotaMatrix: state.quotaMatrix,
+      actualMatrix: state.actualMatrix,
       fileNames: state.fileNames,
       insights: state.insights,
       deals: serializeDeals(state.deals),
@@ -721,7 +740,6 @@ function saveToLocalStorage(state) {
       manualRoster: state.manualRoster || [],
       mockRoster: state.mockRoster || [],
       metricOverrides: state.metricOverrides || {},
-      periodQuotas: state.periodQuotas || {},
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
   } catch (e) {
@@ -739,7 +757,8 @@ function loadFromLocalStorage() {
     parsed.manualRoster = parsed.manualRoster || [];
     parsed.mockRoster = parsed.mockRoster || null;
     parsed.metricOverrides = parsed.metricOverrides || {};
-    parsed.periodQuotas = parsed.periodQuotas || {};
+    parsed.quotaMatrix = parsed.quotaMatrix || null;
+    parsed.actualMatrix = parsed.actualMatrix || {};
     return parsed;
   } catch (e) {
     console.warn("Couldn't load saved scorecard data:", e);
@@ -762,7 +781,7 @@ function makeDealId() {
   return `m-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotas, setQuotas }) {
+function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotaMatrix, setQuotaMatrix, setActualMatrix }) {
   const repNames = roster.map((r) => r.name);
 
   const addRep = () => {
@@ -770,7 +789,7 @@ function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotas, setQuot
     let name = `New Rep ${roster.length + 1}`;
     while (repNames.includes(name)) { n += 1; name = `New Rep ${roster.length + n}`; }
     setRoster((r) => [...r, { name, territory: "" }]);
-    setQuotas((q) => ({ ...q, [name]: { ...DEFAULT_CATEGORY_QUOTA } }));
+    setQuotaMatrix((q) => ({ ...q, [name]: cloneMatrix(DEFAULT_QUOTA_MATRIX) }));
   };
 
   const renameRep = (index, newName) => {
@@ -781,8 +800,16 @@ function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotas, setQuot
     }
     setRoster((r) => r.map((x, i) => (i === index ? { ...x, name: newName } : x)));
     setDeals((d) => d.map((deal) => (deal.rep === oldName ? { ...deal, rep: newName } : deal)));
-    setQuotas((q) => {
+    setQuotaMatrix((q) => {
       const next = { ...q };
+      if (next[oldName]) {
+        next[newName] = next[oldName];
+        delete next[oldName];
+      }
+      return next;
+    });
+    setActualMatrix((a) => {
+      const next = { ...a };
       if (next[oldName]) {
         next[newName] = next[oldName];
         delete next[oldName];
@@ -801,8 +828,13 @@ function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotas, setQuot
     const name = roster[index].name;
     setRoster((r) => r.filter((_, i) => i !== index));
     setDeals((d) => d.filter((deal) => deal.rep !== name));
-    setQuotas((q) => {
+    setQuotaMatrix((q) => {
       const next = { ...q };
+      delete next[name];
+      return next;
+    });
+    setActualMatrix((a) => {
+      const next = { ...a };
       delete next[name];
       return next;
     });
@@ -1021,8 +1053,8 @@ export default function App() {
   const [fileNames, setFileNames] = useState(saved?.fileNames ?? []);
   const [manualRoster, setManualRoster] = useState(saved?.manualRoster ?? []);
   const [manualDeals, setManualDeals] = useState(saved?.manualDeals ?? []);
-  const [quotas, setQuotas] = useState(saved?.quotas ?? mockData.quotas);
-  const [periodQuotas, setPeriodQuotas] = useState(saved?.periodQuotas ?? {});
+  const [quotaMatrix, setQuotaMatrix] = useState(saved?.quotaMatrix ?? mockData.quotaMatrix);
+  const [actualMatrix, setActualMatrix] = useState(saved?.actualMatrix ?? {});
   const [quotaPeriod, setQuotaPeriod] = useState("annual");
   const [metricOverrides, setMetricOverrides] = useState(saved?.metricOverrides ?? {});
   const [parsing, setParsing] = useState(false);
@@ -1065,13 +1097,13 @@ export default function App() {
       setManualRoster((r) => r.map((x) => (x.name === oldName ? { ...x, name: newName } : x)));
       setManualDeals((d) => d.map((deal) => (deal.rep === oldName ? { ...deal, rep: newName } : deal)));
     }
-    setQuotas((q) => {
+    setQuotaMatrix((q) => {
       const next = { ...q };
       if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
       return next;
     });
-    setPeriodQuotas((q) => {
-      const next = { ...q };
+    setActualMatrix((a) => {
+      const next = { ...a };
       if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
       return next;
     });
@@ -1108,19 +1140,25 @@ export default function App() {
   };
 
   React.useEffect(() => {
-    if (source === "mock" && uploadedDeals.length === 0 && manualDeals.length === 0 && manualRoster.length === 0 && Object.keys(insights).length === 0 && Object.keys(metricOverrides).length === 0 && Object.keys(periodQuotas).length === 0) return;
+    if (source === "mock" && uploadedDeals.length === 0 && manualDeals.length === 0 && manualRoster.length === 0 && Object.keys(insights).length === 0 && Object.keys(metricOverrides).length === 0 && Object.keys(actualMatrix).length === 0) return;
     saveToLocalStorage({
-      source, quotas, fileNames, insights,
+      source, quotaMatrix, actualMatrix, fileNames, insights,
       deals: uploadedDeals, activities: uploadedActivities,
-      manualDeals, manualRoster, mockRoster, metricOverrides, periodQuotas,
+      manualDeals, manualRoster, mockRoster, metricOverrides,
     });
     setJustSaved(true);
     const t = setTimeout(() => setJustSaved(false), 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, quotas, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, metricOverrides, periodQuotas]);
+  }, [source, quotaMatrix, actualMatrix, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, metricOverrides]);
 
-  const { byRep, territories } = useMemo(() => computeKPIs(deals, activities, quotas, roster), [deals, activities, quotas, roster]);
+  const quotasForKPI = useMemo(() => {
+    const out = {};
+    Object.keys(quotaMatrix).forEach((rep) => { out[rep] = (quotaMatrix[rep] && quotaMatrix[rep].annual) || DEFAULT_CATEGORY_QUOTA; });
+    return out;
+  }, [quotaMatrix]);
+
+  const { byRep, territories } = useMemo(() => computeKPIs(deals, activities, quotasForKPI, roster), [deals, activities, quotasForKPI, roster]);
 
   const territoryOptions = ["All", ...Object.keys(territories)];
 
@@ -1165,10 +1203,10 @@ export default function App() {
       setUploadedActivities(allActivities);
       setFileNames(names);
       const repNames = Array.from(new Set(allDeals.map((d) => d.rep)));
-      setQuotas((q) => {
+      setQuotaMatrix((q) => {
         const next = { ...q };
         repNames.forEach((r) => {
-          if (!(r in next)) next[r] = { ...DEFAULT_CATEGORY_QUOTA };
+          if (!(r in next)) next[r] = cloneMatrix(DEFAULT_QUOTA_MATRIX);
         });
         return next;
       });
@@ -1185,7 +1223,7 @@ export default function App() {
     setUploadedActivities([]);
     setFileNames([]);
     setInsights({});
-    setQuotas(mockData.quotas);
+    setQuotaMatrix(mockData.quotaMatrix);
     // Don't wipe local storage entirely — manual entry data should survive clearing an upload.
   };
 
@@ -1258,11 +1296,15 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
     forecastPct: t.quota > 0 ? Math.round((t.forecastAmount / t.quota) * 100) : 0,
   }));
 
-  const repChartData = repList.map((r) => ({
-    name: r.rep,
-    won: r.closedWonAmount,
-    quota: (periodQuotas[r.rep] && periodQuotas[r.rep][quotaPeriod] != null) ? periodQuotas[r.rep][quotaPeriod] : DEFAULT_PERIOD_QUOTA[quotaPeriod],
-  }));
+  const repChartData = repList.map((r) => {
+    const repMatrix = quotaMatrix[r.rep] || DEFAULT_QUOTA_MATRIX;
+    const periodQuota = repMatrix[quotaPeriod] || DEFAULT_QUOTA_MATRIX[quotaPeriod];
+    const quotaSum = (periodQuota.netNew || 0) + (periodQuota.software || 0) + (periodQuota.imaging || 0);
+    const repActual = actualMatrix[r.rep] && actualMatrix[r.rep][quotaPeriod];
+    const hasManualActual = repActual && ((repActual.netNew || 0) + (repActual.software || 0) + (repActual.imaging || 0) > 0);
+    const actualSum = hasManualActual ? (repActual.netNew || 0) + (repActual.software || 0) + (repActual.imaging || 0) : r.closedWonAmount;
+    return { name: r.rep, won: actualSum, quota: quotaSum, isManual: hasManualActual };
+  });
 
   const avgDealSizeTrend = useMemo(() => computeAvgDealSizeTrend(filteredDeals), [filteredDeals]);
 
@@ -1386,62 +1428,93 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
               setRoster={setManualRoster}
               deals={manualDeals}
               setDeals={setManualDeals}
-              quotas={quotas}
-              setQuotas={setQuotas}
+              quotaMatrix={quotaMatrix}
+              setQuotaMatrix={setQuotaMatrix}
+              setActualMatrix={setActualMatrix}
             />
           )}
         </div>
 
 
-        {/* Quota editor */}
+        {/* Reps: name + territory, editable regardless of source */}
         <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
           <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
-            Reps &amp; Quotas
+            Reps
           </div>
           <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 12 }}>Click a name or territory to edit it — works for mock, uploaded, and manual reps alike.</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
+            {Object.values(byRep).map((r) => (
+              <div key={r.rep} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  defaultValue={r.rep}
+                  onBlur={(e) => { const v = e.target.value.trim(); if (v) renameRepGlobal(r.rep, v); }}
+                  onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                  style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "4px 7px", width: 150 }}
+                  title="Click to rename this rep"
+                />
+                <input
+                  defaultValue={r.territory}
+                  onBlur={(e) => updateTerritoryGlobal(r.rep, e.target.value.trim())}
+                  onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                  placeholder="Territory"
+                  style={{ fontSize: 12, color: COLORS.inkSoft, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "4px 7px", width: 120 }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Quota targets — full matrix: period (Monthly/Quarterly/Annual) x category (Net New/Software/Imaging).
+            Assigned once at the start of the year, independent of what's actually been sold. Annual drives
+            the scorecard gauges/forecast; any period feeds the Rep Performance chart via the period picker. */}
+        <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
+            Quota Targets
+          </div>
+          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
+            Each rep's assigned quota, broken out by period and by category — independent of what they've actually sold. Annual feeds the scorecard gauges below; pick a period in "Rep Performance: Total vs Quota" to compare against that specific target.
+          </div>
+          {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
             {Object.values(byRep).map((r) => {
-              const repQuotas = quotas[r.rep] || DEFAULT_CATEGORY_QUOTA;
-              const total = CATEGORIES.reduce((s, { key }) => s + (repQuotas[key] || 0), 0);
+              const m = quotaMatrix[r.rep] || DEFAULT_QUOTA_MATRIX;
               return (
-                <div key={r.rep} style={{ borderBottom: `1px solid ${COLORS.paperDim}`, paddingBottom: 10 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10, flexWrap: "wrap" }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <input
-                        defaultValue={r.rep}
-                        onBlur={(e) => { const v = e.target.value.trim(); if (v) renameRepGlobal(r.rep, v); }}
-                        onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
-                        style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "4px 7px", width: 150 }}
-                        title="Click to rename this rep"
-                      />
-                      <input
-                        defaultValue={r.territory}
-                        onBlur={(e) => updateTerritoryGlobal(r.rep, e.target.value.trim())}
-                        onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
-                        placeholder="Territory"
-                        style={{ fontSize: 12, color: COLORS.inkSoft, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "4px 7px", width: 120 }}
-                      />
-                    </div>
-                    <span style={{ fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace", color: COLORS.inkSoft }}>Total: {fmtMoney(total)}</span>
-                  </div>
-                  <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-                    {CATEGORIES.map(({ key, label }) => (
-                      <label key={key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: COLORS.inkSoft }}>
-                        {label}
-                        <input
-                          type="number"
-                          value={repQuotas[key] ?? ""}
-                          onChange={(e) =>
-                            setQuotas((q) => ({
-                              ...q,
-                              [r.rep]: { ...(q[r.rep] || DEFAULT_CATEGORY_QUOTA), [key]: parseFloat(e.target.value) || 0 },
-                            }))
-                          }
-                          style={{ width: 90, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "5px 8px", fontSize: 13, textAlign: "right" }}
-                        />
-                      </label>
-                    ))}
+                <div key={r.rep} style={{ borderBottom: `1px solid ${COLORS.paperDim}`, paddingBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink, marginBottom: 8 }}>{r.rep}</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 10px 6px 0" }}></th>
+                          {CATEGORIES.map((c) => (
+                            <th key={c.key} style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 10px 6px" }}>{c.label}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {QUOTA_PERIODS.map((p) => (
+                          <tr key={p.key}>
+                            <td style={{ fontSize: 11.5, color: COLORS.inkSoft, padding: "4px 10px 4px 0", whiteSpace: "nowrap" }}>{p.label}</td>
+                            {CATEGORIES.map((c) => (
+                              <td key={c.key} style={{ padding: "4px 10px" }}>
+                                <input
+                                  type="number"
+                                  value={(m[p.key] && m[p.key][c.key]) ?? ""}
+                                  onChange={(e) =>
+                                    setQuotaMatrix((q) => {
+                                      const prev = q[r.rep] || cloneMatrix(DEFAULT_QUOTA_MATRIX);
+                                      return { ...q, [r.rep]: { ...prev, [p.key]: { ...prev[p.key], [c.key]: parseFloat(e.target.value) || 0 } } };
+                                    })
+                                  }
+                                  style={{ width: 95, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "5px 8px", fontSize: 13, textAlign: "right" }}
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               );
@@ -1449,54 +1522,70 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
           </div>
         </div>
 
-        {/* Quota targets — the number they were actually assigned at the start of the year,
-            separate from the category split above and from what they've sold. */}
+        {/* Actual sales — manual entry, same period x category shape as quota. When filled in for a
+            given period, this overrides the calculated closed-won total in the Rep Performance chart
+            for that period. Doesn't touch the scorecards, forecast, or breakdowns below, which stay
+            driven by actual deal records. */}
         <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
           <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
-            Quota Targets
+            Actual Sales (Manual Entry)
           </div>
-          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 12, lineHeight: 1.5 }}>
-            The number each rep was assigned at the start of the year — independent of what they've actually closed. Feeds the "Rep Performance: Total vs Quota" chart below (pick which period there).
+          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
+            Type in what a rep actually sold, by period and category, if you'd rather track totals directly instead of relying on individual deal records. When a period has a non-zero entry here, it replaces the calculated total for that rep in the "Rep Performance: Total vs Quota" chart below. Leave at 0 to fall back to the calculated number from deals.
           </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ borderCollapse: "collapse", width: "100%" }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 8px 6px 0" }}>Rep</th>
-                  {QUOTA_PERIODS.map((p) => (
-                    <th key={p.key} style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 8px 6px" }}>{p.label}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {Object.keys(byRep).length === 0 && (
-                  <tr><td colSpan={4} style={{ color: COLORS.inkSoft, fontSize: 13, padding: "4px 0" }}>No reps loaded yet.</td></tr>
-                )}
-                {Object.values(byRep).map((r) => {
-                  const pq = periodQuotas[r.rep] || DEFAULT_PERIOD_QUOTA;
-                  return (
-                    <tr key={r.rep}>
-                      <td style={{ padding: "5px 8px 5px 0", fontSize: 13, fontWeight: 600, color: COLORS.ink, whiteSpace: "nowrap" }}>{r.rep}</td>
-                      {QUOTA_PERIODS.map((p) => (
-                        <td key={p.key} style={{ padding: "5px 8px" }}>
-                          <input
-                            type="number"
-                            value={pq[p.key] ?? ""}
-                            onChange={(e) =>
-                              setPeriodQuotas((q) => ({
-                                ...q,
-                                [r.rep]: { ...(q[r.rep] || DEFAULT_PERIOD_QUOTA), [p.key]: parseFloat(e.target.value) || 0 },
-                              }))
-                            }
-                            style={{ width: 100, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "5px 8px", fontSize: 13, textAlign: "right" }}
-                          />
-                        </td>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            {Object.values(byRep).map((r) => {
+              const m = actualMatrix[r.rep] || EMPTY_ACTUAL_MATRIX;
+              const qm = quotaMatrix[r.rep] || DEFAULT_QUOTA_MATRIX;
+              return (
+                <div key={r.rep} style={{ borderBottom: `1px solid ${COLORS.paperDim}`, paddingBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink, marginBottom: 8 }}>{r.rep}</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 10px 6px 0" }}></th>
+                          {CATEGORIES.map((c) => (
+                            <th key={c.key} style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 10px 6px" }}>{c.label}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {QUOTA_PERIODS.map((p) => (
+                          <tr key={p.key}>
+                            <td style={{ fontSize: 11.5, color: COLORS.inkSoft, padding: "4px 10px 4px 0", whiteSpace: "nowrap" }}>{p.label}</td>
+                            {CATEGORIES.map((c) => {
+                              const actualVal = (m[p.key] && m[p.key][c.key]) || 0;
+                              const quotaVal = (qm[p.key] && qm[p.key][c.key]) || 0;
+                              const pct = quotaVal > 0 ? Math.round((actualVal / quotaVal) * 100) : null;
+                              return (
+                                <td key={c.key} style={{ padding: "4px 10px" }}>
+                                  <input
+                                    type="number"
+                                    value={(m[p.key] && m[p.key][c.key]) ?? ""}
+                                    onChange={(e) =>
+                                      setActualMatrix((a) => {
+                                        const prev = a[r.rep] || cloneMatrix(EMPTY_ACTUAL_MATRIX);
+                                        return { ...a, [r.rep]: { ...prev, [p.key]: { ...prev[p.key], [c.key]: parseFloat(e.target.value) || 0 } } };
+                                      })
+                                    }
+                                    style={{ width: 95, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "5px 8px", fontSize: 13, textAlign: "right" }}
+                                  />
+                                  {pct != null && (
+                                    <div style={{ fontSize: 10, color: pct >= 100 ? COLORS.green : pct >= 75 ? COLORS.amber : COLORS.rust, marginTop: 2 }}>{pct}% of quota</div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -1543,6 +1632,9 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
                   ))}
                 </select>
               </div>
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.inkSoft, marginBottom: 8 }}>
+              Quota comes from the Quota Targets matrix above for the selected period. "Closed Won" uses your Actual Sales entry for that rep/period when you've filled one in — otherwise it's the calculated total from deal records.
             </div>
             <ResponsiveContainer width="100%" height={Math.max(220, repChartData.length * 46)}>
               <BarChart data={repChartData} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 4 }}>
