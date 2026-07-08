@@ -33,6 +33,14 @@ const CATEGORIES = [
   { key: "imaging", label: "Imaging" },
 ];
 const DEFAULT_CATEGORY_QUOTA = { netNew: 50000, software: 30000, imaging: 80000 };
+// A rep's period quota target — set once at the start of the year, independent of what
+// they've actually sold and independent of the category split above.
+const DEFAULT_PERIOD_QUOTA = { monthly: 15000, quarterly: 45000, annual: 180000 };
+const QUOTA_PERIODS = [
+  { key: "monthly", label: "Monthly" },
+  { key: "quarterly", label: "Quarterly" },
+  { key: "annual", label: "Annual" },
+];
 
 // ---------- Mock HubSpot-style data ----------
 const REPS = [
@@ -713,6 +721,7 @@ function saveToLocalStorage(state) {
       manualRoster: state.manualRoster || [],
       mockRoster: state.mockRoster || [],
       metricOverrides: state.metricOverrides || {},
+      periodQuotas: state.periodQuotas || {},
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
   } catch (e) {
@@ -730,6 +739,7 @@ function loadFromLocalStorage() {
     parsed.manualRoster = parsed.manualRoster || [];
     parsed.mockRoster = parsed.mockRoster || null;
     parsed.metricOverrides = parsed.metricOverrides || {};
+    parsed.periodQuotas = parsed.periodQuotas || {};
     return parsed;
   } catch (e) {
     console.warn("Couldn't load saved scorecard data:", e);
@@ -1012,12 +1022,15 @@ export default function App() {
   const [manualRoster, setManualRoster] = useState(saved?.manualRoster ?? []);
   const [manualDeals, setManualDeals] = useState(saved?.manualDeals ?? []);
   const [quotas, setQuotas] = useState(saved?.quotas ?? mockData.quotas);
+  const [periodQuotas, setPeriodQuotas] = useState(saved?.periodQuotas ?? {});
+  const [quotaPeriod, setQuotaPeriod] = useState("annual");
   const [metricOverrides, setMetricOverrides] = useState(saved?.metricOverrides ?? {});
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState(null);
   const [insights, setInsights] = useState(saved?.insights ?? {});
   const [insightLoading, setInsightLoading] = useState({});
   const [territoryFilter, setTerritoryFilter] = useState("All");
+  const [repFilter, setRepFilter] = useState("All");
   const [breakdownTab, setBreakdownTab] = useState("industry");
   const [apiKey, setApiKey] = useState("");
   const [showKeyInput, setShowKeyInput] = useState(false);
@@ -1057,6 +1070,11 @@ export default function App() {
       if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
       return next;
     });
+    setPeriodQuotas((q) => {
+      const next = { ...q };
+      if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
+      return next;
+    });
     setMetricOverrides((o) => {
       if (!o[oldName]) return o;
       const next = { ...o };
@@ -1090,26 +1108,27 @@ export default function App() {
   };
 
   React.useEffect(() => {
-    if (source === "mock" && uploadedDeals.length === 0 && manualDeals.length === 0 && manualRoster.length === 0 && Object.keys(insights).length === 0 && Object.keys(metricOverrides).length === 0) return;
+    if (source === "mock" && uploadedDeals.length === 0 && manualDeals.length === 0 && manualRoster.length === 0 && Object.keys(insights).length === 0 && Object.keys(metricOverrides).length === 0 && Object.keys(periodQuotas).length === 0) return;
     saveToLocalStorage({
       source, quotas, fileNames, insights,
       deals: uploadedDeals, activities: uploadedActivities,
-      manualDeals, manualRoster, mockRoster, metricOverrides,
+      manualDeals, manualRoster, mockRoster, metricOverrides, periodQuotas,
     });
     setJustSaved(true);
     const t = setTimeout(() => setJustSaved(false), 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, quotas, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, metricOverrides]);
+  }, [source, quotas, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, metricOverrides, periodQuotas]);
 
   const { byRep, territories } = useMemo(() => computeKPIs(deals, activities, quotas, roster), [deals, activities, quotas, roster]);
 
   const territoryOptions = ["All", ...Object.keys(territories)];
 
   const filteredDeals = useMemo(
-    () => (territoryFilter === "All" ? deals : deals.filter((d) => d.territory === territoryFilter)),
-
-    [deals, territoryFilter]
+    () => deals
+      .filter((d) => territoryFilter === "All" || d.territory === territoryFilter)
+      .filter((d) => repFilter === "All" || d.rep === repFilter),
+    [deals, territoryFilter, repFilter]
   );
 
   const breakdowns = useMemo(() => {
@@ -1122,8 +1141,11 @@ export default function App() {
     };
   }, [filteredDeals]);
 
+  const repOptions = ["All", ...Object.keys(byRep).sort()];
+
   const repList = Object.values(byRep)
     .filter((r) => territoryFilter === "All" || r.territory === territoryFilter)
+    .filter((r) => repFilter === "All" || r.rep === repFilter)
     .sort((a, b) => (b.attainment ?? -1) - (a.attainment ?? -1));
 
   const handleFiles = useCallback(async (fileList) => {
@@ -1239,7 +1261,7 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
   const repChartData = repList.map((r) => ({
     name: r.rep,
     won: r.closedWonAmount,
-    quota: r.quota,
+    quota: (periodQuotas[r.rep] && periodQuotas[r.rep][quotaPeriod] != null) ? periodQuotas[r.rep][quotaPeriod] : DEFAULT_PERIOD_QUOTA[quotaPeriod],
   }));
 
   const avgDealSizeTrend = useMemo(() => computeAvgDealSizeTrend(filteredDeals), [filteredDeals]);
@@ -1427,6 +1449,57 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
           </div>
         </div>
 
+        {/* Quota targets — the number they were actually assigned at the start of the year,
+            separate from the category split above and from what they've sold. */}
+        <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
+            Quota Targets
+          </div>
+          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 12, lineHeight: 1.5 }}>
+            The number each rep was assigned at the start of the year — independent of what they've actually closed. Feeds the "Rep Performance: Total vs Quota" chart below (pick which period there).
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 8px 6px 0" }}>Rep</th>
+                  {QUOTA_PERIODS.map((p) => (
+                    <th key={p.key} style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 8px 6px" }}>{p.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.keys(byRep).length === 0 && (
+                  <tr><td colSpan={4} style={{ color: COLORS.inkSoft, fontSize: 13, padding: "4px 0" }}>No reps loaded yet.</td></tr>
+                )}
+                {Object.values(byRep).map((r) => {
+                  const pq = periodQuotas[r.rep] || DEFAULT_PERIOD_QUOTA;
+                  return (
+                    <tr key={r.rep}>
+                      <td style={{ padding: "5px 8px 5px 0", fontSize: 13, fontWeight: 600, color: COLORS.ink, whiteSpace: "nowrap" }}>{r.rep}</td>
+                      {QUOTA_PERIODS.map((p) => (
+                        <td key={p.key} style={{ padding: "5px 8px" }}>
+                          <input
+                            type="number"
+                            value={pq[p.key] ?? ""}
+                            onChange={(e) =>
+                              setPeriodQuotas((q) => ({
+                                ...q,
+                                [r.rep]: { ...(q[r.rep] || DEFAULT_PERIOD_QUOTA), [p.key]: parseFloat(e.target.value) || 0 },
+                              }))
+                            }
+                            style={{ width: 100, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "5px 8px", fontSize: 13, textAlign: "right" }}
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         {/* Territory rollup */}
         {territoryChartData.length > 0 && (
           <div style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: "18px 18px 8px", marginBottom: 24 }}>
@@ -1454,8 +1527,22 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
         {/* Rep performance: total closed-won vs quota, side by side */}
         {repChartData.length > 0 && (
           <div style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: "18px 18px 8px", marginBottom: 24 }}>
-            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 6 }}>
-              Rep Performance: Total vs Quota
+            <div className="no-print" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink }}>
+                Rep Performance: Total vs Quota
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.4 }}>Quota period</span>
+                <select
+                  value={quotaPeriod}
+                  onChange={(e) => setQuotaPeriod(e.target.value)}
+                  style={{ border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "5px 8px", fontSize: 12.5, background: "#FFF" }}
+                >
+                  {QUOTA_PERIODS.map((p) => (
+                    <option key={p.key} value={p.key}>{p.label}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <ResponsiveContainer width="100%" height={Math.max(220, repChartData.length * 46)}>
               <BarChart data={repChartData} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 4 }}>
@@ -1465,11 +1552,39 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
                 <Tooltip formatter={(v) => fmtMoney(v)} contentStyle={{ fontFamily: "IBM Plex Sans", fontSize: 12 }} />
                 <Legend wrapperStyle={{ fontSize: 12, fontFamily: "IBM Plex Sans" }} />
                 <Bar dataKey="won" name="Closed Won" fill={COLORS.steel} radius={[0, 3, 3, 0]} />
-                <Bar dataKey="quota" name="Quota" fill={COLORS.paperDim} stroke={COLORS.inkSoft} strokeWidth={1} radius={[0, 3, 3, 0]} />
+                <Bar dataKey="quota" name={`Quota (${QUOTA_PERIODS.find((p) => p.key === quotaPeriod).label})`} fill={COLORS.paperDim} stroke={COLORS.inkSoft} strokeWidth={1} radius={[0, 3, 3, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         )}
+
+        {/* Filters — apply to Avg Deal Size Trend and the Closed-Won Breakdown below */}
+        <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 16, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.4 }}>Territory</span>
+            <select
+              value={territoryFilter}
+              onChange={(e) => setTerritoryFilter(e.target.value)}
+              style={{ border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "6px 10px", fontSize: 13, background: "#FFF" }}
+            >
+              {territoryOptions.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.4 }}>Rep</span>
+            <select
+              value={repFilter}
+              onChange={(e) => setRepFilter(e.target.value)}
+              style={{ border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "6px 10px", fontSize: 13, background: "#FFF" }}
+            >
+              {repOptions.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </div>
+        </div>
 
         {/* Avg deal size trend */}
         {avgDealSizeTrend.length > 1 && (
@@ -1491,20 +1606,6 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
             </ResponsiveContainer>
           </div>
         )}
-
-        {/* Filter */}
-        <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-          <span style={{ fontSize: 12.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.4 }}>Territory</span>
-          <select
-            value={territoryFilter}
-            onChange={(e) => setTerritoryFilter(e.target.value)}
-            style={{ border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "6px 10px", fontSize: 13, background: "#FFF" }}
-          >
-            {territoryOptions.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
-        </div>
 
         {/* Revenue breakdowns: industry / imaging brand / software type */}
         <div style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
