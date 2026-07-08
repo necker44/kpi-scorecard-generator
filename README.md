@@ -8,6 +8,8 @@ Live demo: _add your GitHub Pages URL here after first deploy_
 
 - **Three data sources** — built-in mock HubSpot-style data, upload your own CRM exports, or build a roster and deals entirely by hand in the app
 - **Manual entry** — add/rename/remove reps (with territory), and add/edit/remove deals (rep, category, stage, amount, account, industry, imaging brand or software type, close date) directly in the UI, no file required. Renaming a rep automatically updates their deals and quota.
+- **Editable everywhere** — rep names and territories can be renamed inline in the Reps & Quotas panel regardless of data source (mock, uploaded, or manual); renaming automatically updates that rep's deals, quota, and any custom metric values
+- **Customizable KPIs** — win rate, avg deal cycle, deal count, cross-sell rate, upsell rate, and avg deal size are all click-to-edit on every scorecard. Type a number to override the calculated value (marked with a small dot), clear the field to revert to the real calculation.
 - **Multi-file CSV/Excel upload** — load a deals export and a separate activities export at once; rows are merged by rep name, with loose column-header matching so common HubSpot export headers work as-is
 - **Three-category quotas** — Net New, Software Solutions, and Imaging are tracked as separate quota targets per rep, matching how a managed print/office tech company typically splits revenue goals
 - **Editable quotas** — quota targets usually don't live in a CRM export, so there's a lightweight per-rep, per-category quota panel

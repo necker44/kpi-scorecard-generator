@@ -46,7 +46,7 @@ const REPS = [
 
 const INDUSTRIES = ["Healthcare", "Legal", "Education", "Manufacturing", "Government", "Financial Services"];
 const IMAGING_BRANDS = ["Canon", "Konica Minolta", "Kyocera", "Sharp", "Ricoh", "Xerox"];
-const SOFTWARE_TYPES = ["Document Management", "Print Management", "Workflow Automation", "ECM", "Managed IT / Cloud"];
+const SOFTWARE_TYPES = ["Document Management", "Print Management", "Workflow Automation", "ECM", "Managed IT / Cloud", "Cybersecurity"];
 const ACCOUNT_POOL = [
   "Meridian Health Partners", "Crestview Legal Group", "Lakeside School District",
   "Ironforge Manufacturing", "Prairie County Government", "Sable Financial Group",
@@ -505,8 +505,9 @@ function TonerGauge({ pct, label, compact = false }) {
 }
 
 // ---------- Scorecard ----------
-function Scorecard({ data, insight, onGenerateInsight, insightLoading }) {
+function Scorecard({ data, insight, onGenerateInsight, insightLoading, overrides, onSetOverride, onClearOverride }) {
   const [open, setOpen] = useState(true);
+  const ov = overrides || {};
   const attainmentColor =
     data.attainment == null ? COLORS.inkSoft : data.attainment >= 100 ? COLORS.green : data.attainment >= 75 ? COLORS.amber : COLORS.rust;
 
@@ -564,17 +565,18 @@ function Scorecard({ data, insight, onGenerateInsight, insightLoading }) {
         {open && (
           <>
             <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, borderTop: `1px dashed ${COLORS.line}`, paddingTop: 14 }}>
-              <Metric label="Win rate" value={fmtPct(data.winRate)} />
-              <Metric label="Avg cycle" value={data.avgCycle == null ? "—" : Math.round(data.avgCycle) + "d"} />
+              <EditableMetric label="Win rate" rawValue={ov.winRate != null ? ov.winRate : data.winRate} isOverride={ov.winRate != null} format={(v) => (v == null ? "—" : Math.round(v) + "%")} onSave={(v) => onSetOverride("winRate", v)} onClear={() => onClearOverride("winRate")} />
+              <EditableMetric label="Avg cycle" rawValue={ov.avgCycle != null ? ov.avgCycle : data.avgCycle} isOverride={ov.avgCycle != null} format={(v) => (v == null ? "—" : Math.round(v) + "d")} onSave={(v) => onSetOverride("avgCycle", v)} onClear={() => onClearOverride("avgCycle")} />
               <Metric label="Pipeline" value={fmtMoney(data.pipelineAmount)} />
-              <Metric label="Deals" value={data.dealCount} />
+              <EditableMetric label="Deals" rawValue={ov.dealCount != null ? ov.dealCount : data.dealCount} isOverride={ov.dealCount != null} format={(v) => (v == null ? "—" : Math.round(v))} onSave={(v) => onSetOverride("dealCount", v)} onClear={() => onClearOverride("dealCount")} />
               <Metric label="Won" value={data.wonCount} />
               <Metric label="Activities" value={data.activityTotal || "—"} />
               <Metric label="Coverage" value={data.coverage == null ? "Met" : data.coverage.toFixed(1) + "×"} />
-              <Metric label="Cross-sell" value={fmtPct(data.crossSellRate)} />
-              <Metric label="Upsell" value={fmtPct(data.upsellRate)} />
-              <Metric label="Avg deal size" value={fmtMoney(data.avgDealSize)} />
+              <EditableMetric label="Cross-sell" rawValue={ov.crossSellRate != null ? ov.crossSellRate : data.crossSellRate} isOverride={ov.crossSellRate != null} format={(v) => (v == null ? "—" : Math.round(v) + "%")} onSave={(v) => onSetOverride("crossSellRate", v)} onClear={() => onClearOverride("crossSellRate")} />
+              <EditableMetric label="Upsell" rawValue={ov.upsellRate != null ? ov.upsellRate : data.upsellRate} isOverride={ov.upsellRate != null} format={(v) => (v == null ? "—" : Math.round(v) + "%")} onSave={(v) => onSetOverride("upsellRate", v)} onClear={() => onClearOverride("upsellRate")} />
+              <EditableMetric label="Avg deal size" rawValue={ov.avgDealSize != null ? ov.avgDealSize : data.avgDealSize} isOverride={ov.avgDealSize != null} format={(v) => fmtMoney(v)} onSave={(v) => onSetOverride("avgDealSize", v)} onClear={() => onClearOverride("avgDealSize")} />
             </div>
+            <div style={{ fontSize: 10.5, color: COLORS.inkSoft, marginTop: 6 }}>Win rate, avg cycle, deals, cross-sell, upsell, and avg deal size are editable — click a value to type your own, clear the field to go back to the calculated number.</div>
 
             <div style={{ marginTop: 14 }}>
               {insight ? (
@@ -611,6 +613,51 @@ function Metric({ label, value }) {
   return (
     <div>
       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 600, color: COLORS.ink }}>{value}</div>
+      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: COLORS.inkSoft, letterSpacing: 0.4, textTransform: "uppercase", marginTop: 1 }}>{label}</div>
+    </div>
+  );
+}
+
+// A metric tile that's click-to-edit: click the value, type a custom number, blur/Enter to save.
+// Clearing the field back to blank removes the override and reverts to the calculated value.
+function EditableMetric({ label, rawValue, isOverride, format, onSave, onClear }) {
+  const [editing, setEditing] = useState(false);
+
+  const commit = (e) => {
+    const v = e.target.value.trim();
+    if (v === "") onClear();
+    else {
+      const parsed = parseFloat(v);
+      if (!isNaN(parsed)) onSave(parsed);
+    }
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div>
+        <input
+          type="number"
+          autoFocus
+          defaultValue={rawValue ?? ""}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.target.blur();
+            if (e.key === "Escape") setEditing(false);
+          }}
+          style={{ width: "100%", fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, border: `1px solid ${COLORS.steel}`, borderRadius: 4, padding: "3px 5px" }}
+        />
+        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: COLORS.inkSoft, letterSpacing: 0.4, textTransform: "uppercase", marginTop: 1 }}>{label}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div onClick={() => setEditing(true)} style={{ cursor: "pointer" }} title="Click to enter a custom value">
+      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 600, color: isOverride ? COLORS.steel : COLORS.ink, display: "flex", alignItems: "center", gap: 5 }}>
+        {format(rawValue)}
+        {isOverride && <span style={{ width: 5, height: 5, borderRadius: "50%", background: COLORS.amber, display: "inline-block" }} title="Custom value" />}
+      </div>
       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: COLORS.inkSoft, letterSpacing: 0.4, textTransform: "uppercase", marginTop: 1 }}>{label}</div>
     </div>
   );
@@ -664,6 +711,8 @@ function saveToLocalStorage(state) {
       activities: state.activities,
       manualDeals: serializeDeals(state.manualDeals || []),
       manualRoster: state.manualRoster || [],
+      mockRoster: state.mockRoster || [],
+      metricOverrides: state.metricOverrides || {},
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
   } catch (e) {
@@ -679,6 +728,8 @@ function loadFromLocalStorage() {
     parsed.deals = deserializeDeals(parsed.deals);
     parsed.manualDeals = deserializeDeals(parsed.manualDeals);
     parsed.manualRoster = parsed.manualRoster || [];
+    parsed.mockRoster = parsed.mockRoster || null;
+    parsed.metricOverrides = parsed.metricOverrides || {};
     return parsed;
   } catch (e) {
     console.warn("Couldn't load saved scorecard data:", e);
@@ -953,12 +1004,15 @@ export default function App() {
   const saved = useMemo(() => loadFromLocalStorage(), []);
   const [source, setSource] = useState(saved?.source ?? "mock");
   const mockData = useMemo(() => generateMockData(), []);
+  const initialMockRoster = useMemo(() => REPS.map((r) => ({ originalName: r.name, displayName: r.name, territory: r.territory })), []);
+  const [mockRoster, setMockRoster] = useState(saved?.mockRoster ?? initialMockRoster);
   const [uploadedDeals, setUploadedDeals] = useState(saved?.deals ?? []);
   const [uploadedActivities, setUploadedActivities] = useState(saved?.activities ?? []);
   const [fileNames, setFileNames] = useState(saved?.fileNames ?? []);
   const [manualRoster, setManualRoster] = useState(saved?.manualRoster ?? []);
   const [manualDeals, setManualDeals] = useState(saved?.manualDeals ?? []);
   const [quotas, setQuotas] = useState(saved?.quotas ?? mockData.quotas);
+  const [metricOverrides, setMetricOverrides] = useState(saved?.metricOverrides ?? {});
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState(null);
   const [insights, setInsights] = useState(saved?.insights ?? {});
@@ -969,22 +1023,84 @@ export default function App() {
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
 
-  const deals = source === "mock" ? mockData.deals : source === "upload" ? uploadedDeals : manualDeals;
-  const activities = source === "mock" ? mockData.activities : source === "upload" ? uploadedActivities : [];
+  // Mock deals/activities carry their original generated rep names — remap them through
+  // mockRoster so renaming a mock rep doesn't require regenerating the dataset.
+  const mockDeals = useMemo(() => {
+    const nameMap = {}, territoryMap = {};
+    mockRoster.forEach((r) => { nameMap[r.originalName] = r.displayName; territoryMap[r.originalName] = r.territory; });
+    return mockData.deals.map((d) => ({ ...d, rep: nameMap[d.rep] ?? d.rep, territory: territoryMap[d.rep] ?? d.territory }));
+  }, [mockData, mockRoster]);
+  const mockActivities = useMemo(() => {
+    const nameMap = {};
+    mockRoster.forEach((r) => { nameMap[r.originalName] = r.displayName; });
+    return mockData.activities.map((a) => ({ ...a, rep: nameMap[a.rep] ?? a.rep }));
+  }, [mockData, mockRoster]);
+
+  const deals = source === "mock" ? mockDeals : source === "upload" ? uploadedDeals : manualDeals;
+  const activities = source === "mock" ? mockActivities : source === "upload" ? uploadedActivities : [];
   const roster = source === "manual" ? manualRoster : [];
 
+  // Renaming/re-territorying works the same way regardless of which data source is active.
+  const renameRepGlobal = (oldName, newName) => {
+    if (!newName || newName === oldName) return;
+    if (source === "mock") {
+      setMockRoster((r) => r.map((x) => (x.displayName === oldName ? { ...x, displayName: newName } : x)));
+    } else if (source === "upload") {
+      setUploadedDeals((d) => d.map((deal) => (deal.rep === oldName ? { ...deal, rep: newName } : deal)));
+      setUploadedActivities((a) => a.map((act) => (act.rep === oldName ? { ...act, rep: newName } : act)));
+    } else if (source === "manual") {
+      setManualRoster((r) => r.map((x) => (x.name === oldName ? { ...x, name: newName } : x)));
+      setManualDeals((d) => d.map((deal) => (deal.rep === oldName ? { ...deal, rep: newName } : deal)));
+    }
+    setQuotas((q) => {
+      const next = { ...q };
+      if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
+      return next;
+    });
+    setMetricOverrides((o) => {
+      if (!o[oldName]) return o;
+      const next = { ...o };
+      next[newName] = next[oldName];
+      delete next[oldName];
+      return next;
+    });
+  };
+
+  const updateTerritoryGlobal = (repName, territory) => {
+    if (source === "mock") {
+      setMockRoster((r) => r.map((x) => (x.displayName === repName ? { ...x, territory } : x)));
+    } else if (source === "upload") {
+      setUploadedDeals((d) => d.map((deal) => (deal.rep === repName ? { ...deal, territory } : deal)));
+    } else if (source === "manual") {
+      setManualRoster((r) => r.map((x) => (x.name === repName ? { ...x, territory } : x)));
+      setManualDeals((d) => d.map((deal) => (deal.rep === repName ? { ...deal, territory } : deal)));
+    }
+  };
+
+  const setMetricOverride = (repName, field, value) => {
+    setMetricOverrides((o) => ({ ...o, [repName]: { ...(o[repName] || {}), [field]: value } }));
+  };
+  const clearMetricOverride = (repName, field) => {
+    setMetricOverrides((o) => {
+      if (!o[repName]) return o;
+      const next = { ...o, [repName]: { ...o[repName] } };
+      delete next[repName][field];
+      return next;
+    });
+  };
+
   React.useEffect(() => {
-    if (source === "mock" && uploadedDeals.length === 0 && manualDeals.length === 0 && manualRoster.length === 0 && Object.keys(insights).length === 0) return;
+    if (source === "mock" && uploadedDeals.length === 0 && manualDeals.length === 0 && manualRoster.length === 0 && Object.keys(insights).length === 0 && Object.keys(metricOverrides).length === 0) return;
     saveToLocalStorage({
       source, quotas, fileNames, insights,
       deals: uploadedDeals, activities: uploadedActivities,
-      manualDeals, manualRoster,
+      manualDeals, manualRoster, mockRoster, metricOverrides,
     });
     setJustSaved(true);
     const t = setTimeout(() => setJustSaved(false), 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, quotas, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster]);
+  }, [source, quotas, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, metricOverrides]);
 
   const { byRep, territories } = useMemo(() => computeKPIs(deals, activities, quotas, roster), [deals, activities, quotas, roster]);
 
@@ -992,6 +1108,7 @@ export default function App() {
 
   const filteredDeals = useMemo(
     () => (territoryFilter === "All" ? deals : deals.filter((d) => d.territory === territoryFilter)),
+
     [deals, territoryFilter]
   );
 
@@ -1050,12 +1167,22 @@ export default function App() {
     // Don't wipe local storage entirely — manual entry data should survive clearing an upload.
   };
 
-  const generateInsight = async (rep) => {
+  const generateInsight = async (repRaw) => {
     if (!apiKey) {
       setShowKeyInput(true);
       return;
     }
-    setInsightLoading((s) => ({ ...s, [rep.rep]: true }));
+    const ov = metricOverrides[repRaw.rep] || {};
+    const rep = {
+      ...repRaw,
+      winRate: ov.winRate != null ? ov.winRate : repRaw.winRate,
+      avgCycle: ov.avgCycle != null ? ov.avgCycle : repRaw.avgCycle,
+      dealCount: ov.dealCount != null ? ov.dealCount : repRaw.dealCount,
+      crossSellRate: ov.crossSellRate != null ? ov.crossSellRate : repRaw.crossSellRate,
+      upsellRate: ov.upsellRate != null ? ov.upsellRate : repRaw.upsellRate,
+      avgDealSize: ov.avgDealSize != null ? ov.avgDealSize : repRaw.avgDealSize,
+    };
+    setInsightLoading((s) => ({ ...s, [repRaw.rep]: true }));
     try {
       const catLines = CATEGORIES.map(({ key, label }) => {
         const c = rep.categories[key];
@@ -1246,9 +1373,10 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
 
         {/* Quota editor */}
         <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
-          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 10 }}>
-            Quotas
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
+            Reps &amp; Quotas
           </div>
+          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 12 }}>Click a name or territory to edit it — works for mock, uploaded, and manual reps alike.</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
             {Object.values(byRep).map((r) => {
@@ -1256,8 +1384,23 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
               const total = CATEGORIES.reduce((s, { key }) => s + (repQuotas[key] || 0), 0);
               return (
                 <div key={r.rep} style={{ borderBottom: `1px solid ${COLORS.paperDim}`, paddingBottom: 10 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink }}>{r.rep}</span>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <input
+                        defaultValue={r.rep}
+                        onBlur={(e) => { const v = e.target.value.trim(); if (v) renameRepGlobal(r.rep, v); }}
+                        onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                        style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "4px 7px", width: 150 }}
+                        title="Click to rename this rep"
+                      />
+                      <input
+                        defaultValue={r.territory}
+                        onBlur={(e) => updateTerritoryGlobal(r.rep, e.target.value.trim())}
+                        onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                        placeholder="Territory"
+                        style={{ fontSize: 12, color: COLORS.inkSoft, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "4px 7px", width: 120 }}
+                      />
+                    </div>
                     <span style={{ fontSize: 11.5, fontFamily: "'IBM Plex Mono', monospace", color: COLORS.inkSoft }}>Total: {fmtMoney(total)}</span>
                   </div>
                   <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
@@ -1390,6 +1533,9 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
               insight={insights[r.rep]}
               insightLoading={insightLoading[r.rep]}
               onGenerateInsight={() => generateInsight(r)}
+              overrides={metricOverrides[r.rep]}
+              onSetOverride={(field, value) => setMetricOverride(r.rep, field, value)}
+              onClearOverride={(field) => clearMetricOverride(r.rep, field)}
             />
           ))}
           {repList.length === 0 && (
