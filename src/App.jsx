@@ -114,6 +114,7 @@ function generateMockData() {
   const deals = [];
   const activities = [];
   const quotaMatrix = {};
+  const actualMatrix = {};
   let dealId = 1;
 
   REPS.forEach((rep) => {
@@ -129,6 +130,7 @@ function generateMockData() {
     };
     const repAccounts = sampleWithoutReplacement(ACCOUNT_POOL, 6 + Math.floor(rnd() * 4), rnd);
     const dealCount = 16 + Math.floor(rnd() * 12);
+    const repDealsForActual = [];
     for (let i = 0; i < dealCount; i++) {
       const stageRoll = rnd();
       const stage =
@@ -151,7 +153,7 @@ function generateMockData() {
         category === "software" ? Math.floor(2000 + rnd() * 12000) :
         Math.floor(800 + rnd() * 6000);
 
-      deals.push({
+      const deal = {
         id: dealId++,
         rep: rep.name,
         territory: rep.territory,
@@ -164,13 +166,32 @@ function generateMockData() {
         account,
         createdDate: created,
         closeDate: stage.startsWith("Closed") ? closeDate : null,
-      });
+      };
+      deals.push(deal);
+      repDealsForActual.push(deal);
     }
     const activityCount = 60 + Math.floor(rnd() * 140);
     activities.push({ rep: rep.name, territory: rep.territory, count: activityCount });
+
+    // Derive Actual Sales (Monthly/Quarterly/Annual) from this rep's own closed-won deals,
+    // bucketed by real close-date months. Mock deals span Jan(0)-May(4) 2026 by construction,
+    // so "this month" = May, "this quarter" = Mar-May, "this year" = the full Jan-May window.
+    const won = repDealsForActual.filter((d) => d.stage === "Closed Won" && d.closeDate);
+    const sumByMonths = (months) => {
+      const sums = { netNew: 0, software: 0, imaging: 0 };
+      won.forEach((d) => {
+        if (months.has(d.closeDate.getMonth())) sums[d.category] += d.amount || 0;
+      });
+      return sums;
+    };
+    actualMatrix[rep.name] = {
+      monthly: sumByMonths(new Set([4])),
+      quarterly: sumByMonths(new Set([2, 3, 4])),
+      annual: sumByMonths(new Set([0, 1, 2, 3, 4])),
+    };
   });
 
-  return { deals, activities, quotaMatrix };
+  return { deals, activities, quotaMatrix, actualMatrix };
 }
 
 // ---------- File parsing helpers ----------
@@ -316,7 +337,7 @@ function computeExpansionIds(deals) {
 }
 
 // ---------- KPI computation ----------
-function computeKPIs(deals, activities, quotas, roster = []) {
+function computeKPIs(deals, activities, quotas, roster = [], actualMatrix = {}) {
   const repNames = Array.from(new Set([...deals.map((d) => d.rep), ...roster.map((r) => r.name)]));
   const rosterTerritory = {};
   roster.forEach((r) => { rosterTerritory[r.name] = r.territory; });
@@ -348,13 +369,20 @@ function computeKPIs(deals, activities, quotas, roster = []) {
     const upsellRate = won.length > 0 ? (upsellWonCount / won.length) * 100 : null;
     const avgDealSize = won.length > 0 ? won.reduce((s, d) => s + (d.amount || 0), 0) / won.length : null;
 
+    // Actual Sales entry is the primary source for "what's actually sold" whenever it's been
+    // filled in for this rep (Annual row) — deal totals remain the fallback for anyone who
+    // hasn't entered it yet.
+    const repActual = actualMatrix[rep] && actualMatrix[rep].annual;
+    const hasActual = repActual && ((repActual.netNew || 0) + (repActual.software || 0) + (repActual.imaging || 0) > 0);
+
     const repQuotas = quotas[rep] || DEFAULT_CATEGORY_QUOTA;
     const categories = {};
     let totalWon = 0, totalQuota = 0, totalPipeline = 0, totalForecast = 0;
     CATEGORIES.forEach(({ key, label }) => {
       const catWonDeals = won.filter((d) => d.category === key);
       const catOpenDeals = open.filter((d) => d.category === key);
-      const catWon = catWonDeals.reduce((s, d) => s + (d.amount || 0), 0);
+      const dealWon = catWonDeals.reduce((s, d) => s + (d.amount || 0), 0);
+      const catWon = hasActual ? (repActual[key] || 0) : dealWon;
       const catPipeline = catOpenDeals.reduce((s, d) => s + (d.amount || 0), 0);
       const catForecast = catWon + catOpenDeals.reduce((s, d) => s + (d.amount || 0) * stageProbability(d.stage), 0);
       const catQuota = repQuotas[key] || 0;
@@ -398,6 +426,7 @@ function computeKPIs(deals, activities, quotas, roster = []) {
       activityTotal,
       dealCount: repDeals.length,
       wonCount: won.length,
+      usingActualSales: hasActual,
     };
   });
 
@@ -575,7 +604,14 @@ function Scorecard({ data, insight, onGenerateInsight, insightLoading, overrides
         </div>
 
         <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "baseline", borderTop: `1px dashed ${COLORS.line}`, paddingTop: 10 }}>
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: COLORS.inkSoft, textTransform: "uppercase" }}>Total</span>
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: COLORS.inkSoft, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 5 }}>
+            Total
+            {data.usingActualSales && (
+              <span style={{ fontSize: 9, color: COLORS.steel, border: `1px solid ${COLORS.steel}`, borderRadius: 3, padding: "1px 4px", textTransform: "none", letterSpacing: 0 }} title="Using your Actual Sales entry instead of calculated deal totals">
+                actual sales
+              </span>
+            )}
+          </span>
           <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 600, color: COLORS.ink }}>
             {fmtMoney(data.closedWonAmount)} <span style={{ color: COLORS.inkSoft, fontWeight: 400 }}>of {fmtMoney(data.quota)}</span>
           </span>
@@ -1054,7 +1090,9 @@ export default function App() {
   const [manualRoster, setManualRoster] = useState(saved?.manualRoster ?? []);
   const [manualDeals, setManualDeals] = useState(saved?.manualDeals ?? []);
   const [quotaMatrix, setQuotaMatrix] = useState(saved?.quotaMatrix ?? mockData.quotaMatrix);
-  const [actualMatrix, setActualMatrix] = useState(saved?.actualMatrix ?? {});
+  const [actualMatrix, setActualMatrix] = useState(
+    saved?.actualMatrix && Object.keys(saved.actualMatrix).length > 0 ? saved.actualMatrix : mockData.actualMatrix
+  );
   const [quotaPeriod, setQuotaPeriod] = useState("annual");
   const [metricOverrides, setMetricOverrides] = useState(saved?.metricOverrides ?? {});
   const [parsing, setParsing] = useState(false);
@@ -1158,7 +1196,7 @@ export default function App() {
     return out;
   }, [quotaMatrix]);
 
-  const { byRep, territories } = useMemo(() => computeKPIs(deals, activities, quotasForKPI, roster), [deals, activities, quotasForKPI, roster]);
+  const { byRep, territories } = useMemo(() => computeKPIs(deals, activities, quotasForKPI, roster, actualMatrix), [deals, activities, quotasForKPI, roster, actualMatrix]);
 
   const territoryOptions = ["All", ...Object.keys(territories)];
 
@@ -1531,7 +1569,7 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
             Actual Sales (Manual Entry)
           </div>
           <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
-            Type in what a rep actually sold, by period and category, if you'd rather track totals directly instead of relying on individual deal records. When a period has a non-zero entry here, it replaces the calculated total for that rep in the "Rep Performance: Total vs Quota" chart below. Leave at 0 to fall back to the calculated number from deals.
+            Type in what a rep actually sold, by period and category. Whenever the Annual row here is filled in (non-zero), it becomes the primary "actual sold" figure everywhere: the scorecard gauges, forecast, coverage ratio, and the Rep Performance chart below all use it instead of the calculated deal total. Win rate, avg deal cycle, deal count, pipeline, cross-sell/upsell rate, and the breakdowns further down still come from deal records regardless. Leave a rep's Annual row at 0 to fall back to their calculated deal total everywhere.
           </div>
           {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1634,7 +1672,7 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
               </div>
             </div>
             <div style={{ fontSize: 11, color: COLORS.inkSoft, marginBottom: 8 }}>
-              Quota comes from the Quota Targets matrix above for the selected period. "Closed Won" uses your Actual Sales entry for that rep/period when you've filled one in — otherwise it's the calculated total from deal records.
+              Quota comes from the Quota Targets matrix above for the selected period. "Closed Won" uses your Actual Sales entry for that rep/period whenever it's filled in — otherwise it's the calculated total from deal records.
             </div>
             <ResponsiveContainer width="100%" height={Math.max(220, repChartData.length * 46)}>
               <BarChart data={repChartData} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 4 }}>
