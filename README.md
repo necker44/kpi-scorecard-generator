@@ -10,20 +10,19 @@ A rep- and territory-level KPI scorecard generator built for managed print / off
 
 - **Three data sources** — built-in mock HubSpot-style data, upload your own CRM exports, or build a roster and deals entirely by hand in the app
 - **Manual entry** — add/rename/remove reps (with territory), and add/edit/remove deals (rep, category, stage, amount, account, industry, imaging brand or software type, close date) directly in the UI, no file required. Renaming a rep automatically updates their deals and quota.
-- **Editable everywhere** — rep names and territories can be renamed inline in the Reps & Quotas panel regardless of data source (mock, uploaded, or manual); renaming automatically updates that rep's deals, quota, and any custom metric values
+- **Editable everywhere** — rep names and territories can be renamed inline in the Reps panel regardless of data source (mock, uploaded, or manual); renaming automatically updates that rep's deals, quotas, actuals, and any custom metric values
 - **Customizable KPIs** — win rate, avg deal cycle, deal count, cross-sell rate, upsell rate, and avg deal size are all click-to-edit on every scorecard. Type a number to override the calculated value (marked with a small dot), clear the field to revert to the real calculation.
 - **Multi-file CSV/Excel upload** — load a deals export and a separate activities export at once; rows are merged by rep name, with loose column-header matching so common HubSpot export headers work as-is
-- **Three-category quotas** — Net New, Software Solutions, and Imaging are tracked as separate quota targets per rep, matching how a managed print/office tech company typically splits revenue goals
-- **Editable quotas** — quota targets usually don't live in a CRM export, so there's a lightweight per-rep, per-category quota panel
-- **Per-rep scorecards** — quota attainment for each of the three categories (rendered as toner-cartridge fill gauges), plus win rate, average deal cycle, open pipeline value, deal counts, activity volume, and:
+- **Quota Targets matrix** — every rep gets a full grid of quotas: Monthly / Quarterly / Annual **by** Net New / Software Solutions / Imaging (9 editable numbers per rep). Assigned once at the start of the year, completely independent of what they've actually sold. Annual drives the scorecard gauges/forecast; any period feeds the Rep Performance chart.
+- **Actual Sales (manual entry)** — a matching Monthly/Quarterly/Annual × category grid where you can type in what a rep actually sold directly, if you'd rather track aggregate totals instead of individual deals. Each cell shows % of quota inline. When filled in for a period, it overrides the calculated total in the Rep Performance chart for that rep/period — deal-driven scorecards, forecast, and breakdowns are unaffected.
+- **Per-rep scorecards** — quota attainment for each of the three categories (rendered as toner-cartridge fill gauges, driven by the Annual quota), plus win rate, average deal cycle, open pipeline value, deal counts, activity volume, and:
   - **Weighted forecast** — projected period-end result using stage-based close probabilities, shown alongside actual attainment
   - **Quota coverage ratio** — open pipeline ÷ remaining quota gap, so you can see at a glance whether a rep has enough in flight to still hit their number
   - **Cross-sell rate** — % of a rep's closed-won deals that landed in an account which already had a closed-won deal in a *different* category (Net New/Software/Imaging) — expansion into a new category
   - **Upsell rate** — % of a rep's closed-won deals that landed in an account which already had a closed-won deal in the *same* category — repeat/expansion revenue within a category
   - **Avg deal size** — current average deal size across all won deals
 - **Territory roll-up chart** — blended attainment *and* forecast by territory, side by side
-- **Quota Targets** — a separate Monthly/Quarterly/Annual quota per rep, independent of the category-split quotas above and independent of what they've actually sold. This is the number they're assigned at the start of the year; pick which period to compare against in the chart below.
-- **Rep performance chart** — every rep's total closed-won vs. their quota target for the selected period (Monthly/Quarterly/Annual) in one horizontal bar chart, so reps can be compared against each other at a glance
+- **Rep performance chart** — every rep's actual sales vs. their quota target for the selected period (Monthly/Quarterly/Annual) in one horizontal bar chart, so reps can be compared against each other at a glance
 - **Rep &amp; territory filters** — narrow the Avg Deal Size Trend and Closed-Won Breakdown views down to a single rep, a single territory, or both at once
 - **Avg deal size trend** — a line chart of average deal size per category over time (by close month), so you can spot deal sizes shrinking or growing
 - **Closed-won breakdowns** — separate views of closed-won revenue by Industry, Imaging Brand, Software Type, and Cross-Sell/Upsell (by account), filterable by territory
