@@ -369,20 +369,16 @@ function computeKPIs(deals, activities, quotas, roster = [], actualMatrix = {}) 
     const upsellRate = won.length > 0 ? (upsellWonCount / won.length) * 100 : null;
     const avgDealSize = won.length > 0 ? won.reduce((s, d) => s + (d.amount || 0), 0) / won.length : null;
 
-    // Actual Sales entry is the primary source for "what's actually sold" whenever it's been
-    // filled in for this rep (Annual row) — deal totals remain the fallback for anyone who
-    // hasn't entered it yet.
-    const repActual = actualMatrix[rep] && actualMatrix[rep].annual;
-    const hasActual = repActual && ((repActual.netNew || 0) + (repActual.software || 0) + (repActual.imaging || 0) > 0);
+    // Actual Sales entry is the strict source of truth for "what's actually sold" — no
+    // fallback to deal totals. If a rep's Annual row hasn't been filled in, that's 0 sold.
+    const repActual = (actualMatrix[rep] && actualMatrix[rep].annual) || EMPTY_ACTUAL_MATRIX.annual;
 
     const repQuotas = quotas[rep] || DEFAULT_CATEGORY_QUOTA;
     const categories = {};
     let totalWon = 0, totalQuota = 0, totalPipeline = 0, totalForecast = 0;
     CATEGORIES.forEach(({ key, label }) => {
-      const catWonDeals = won.filter((d) => d.category === key);
       const catOpenDeals = open.filter((d) => d.category === key);
-      const dealWon = catWonDeals.reduce((s, d) => s + (d.amount || 0), 0);
-      const catWon = hasActual ? (repActual[key] || 0) : dealWon;
+      const catWon = repActual[key] || 0;
       const catPipeline = catOpenDeals.reduce((s, d) => s + (d.amount || 0), 0);
       const catForecast = catWon + catOpenDeals.reduce((s, d) => s + (d.amount || 0) * stageProbability(d.stage), 0);
       const catQuota = repQuotas[key] || 0;
@@ -426,7 +422,6 @@ function computeKPIs(deals, activities, quotas, roster = [], actualMatrix = {}) 
       activityTotal,
       dealCount: repDeals.length,
       wonCount: won.length,
-      usingActualSales: hasActual,
     };
   });
 
@@ -604,14 +599,7 @@ function Scorecard({ data, insight, onGenerateInsight, insightLoading, overrides
         </div>
 
         <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "baseline", borderTop: `1px dashed ${COLORS.line}`, paddingTop: 10 }}>
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: COLORS.inkSoft, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 5 }}>
-            Total
-            {data.usingActualSales && (
-              <span style={{ fontSize: 9, color: COLORS.steel, border: `1px solid ${COLORS.steel}`, borderRadius: 3, padding: "1px 4px", textTransform: "none", letterSpacing: 0 }} title="Using your Actual Sales entry instead of calculated deal totals">
-                actual sales
-              </span>
-            )}
-          </span>
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: COLORS.inkSoft, textTransform: "uppercase" }}>Total (Actual Sales)</span>
           <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 600, color: COLORS.ink }}>
             {fmtMoney(data.closedWonAmount)} <span style={{ color: COLORS.inkSoft, fontWeight: 400 }}>of {fmtMoney(data.quota)}</span>
           </span>
@@ -1207,15 +1195,40 @@ export default function App() {
     [deals, territoryFilter, repFilter]
   );
 
+  // The Industry/Imaging Brand/Software Type/Cross-Sell breakdowns need deal-level detail
+  // (which Actual Sales doesn't track), so we scale each rep+category's won-deal amounts to
+  // match that rep's Actual Sales figure for that category — the mix comes from deals, the
+  // totals come from Actual Sales. A rep/category with no Actual Sales entered shows $0 here,
+  // same as everywhere else.
+  const dealsScaledToActual = useMemo(() => {
+    const scale = {};
+    filteredDeals.forEach((d) => {
+      const repKey = d.rep;
+      if (!scale[repKey]) scale[repKey] = {};
+      if (scale[repKey][d.category] == null) {
+        const dealTotal = filteredDeals
+          .filter((x) => x.rep === repKey && x.category === d.category && x.stage.toLowerCase().includes("won"))
+          .reduce((s, x) => s + (x.amount || 0), 0);
+        const actualTotal = ((actualMatrix[repKey] && actualMatrix[repKey].annual && actualMatrix[repKey].annual[d.category]) || 0);
+        scale[repKey][d.category] = dealTotal > 0 ? actualTotal / dealTotal : 0;
+      }
+    });
+    return filteredDeals.map((d) => {
+      if (!d.stage.toLowerCase().includes("won")) return d;
+      const f = (scale[d.rep] && scale[d.rep][d.category] != null) ? scale[d.rep][d.category] : 0;
+      return { ...d, amount: (d.amount || 0) * f };
+    });
+  }, [filteredDeals, actualMatrix]);
+
   const breakdowns = useMemo(() => {
-    const { crossSellIds, upsellIds } = computeExpansionIds(filteredDeals);
+    const { crossSellIds, upsellIds } = computeExpansionIds(dealsScaledToActual);
     return {
-      industry: groupWonAmountBy(filteredDeals, "industry"),
-      imagingBrand: groupWonAmountBy(filteredDeals.filter((d) => d.category === "imaging"), "imagingBrand"),
-      softwareType: groupWonAmountBy(filteredDeals.filter((d) => d.category === "software"), "softwareType"),
-      crossSell: groupWonAmountBy(filteredDeals.filter((d) => crossSellIds.has(d.id) || upsellIds.has(d.id)), "account"),
+      industry: groupWonAmountBy(dealsScaledToActual, "industry"),
+      imagingBrand: groupWonAmountBy(dealsScaledToActual.filter((d) => d.category === "imaging"), "imagingBrand"),
+      softwareType: groupWonAmountBy(dealsScaledToActual.filter((d) => d.category === "software"), "softwareType"),
+      crossSell: groupWonAmountBy(dealsScaledToActual.filter((d) => crossSellIds.has(d.id) || upsellIds.has(d.id)), "account"),
     };
-  }, [filteredDeals]);
+  }, [dealsScaledToActual]);
 
   const repOptions = ["All", ...Object.keys(byRep).sort()];
 
@@ -1338,10 +1351,9 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
     const repMatrix = quotaMatrix[r.rep] || DEFAULT_QUOTA_MATRIX;
     const periodQuota = repMatrix[quotaPeriod] || DEFAULT_QUOTA_MATRIX[quotaPeriod];
     const quotaSum = (periodQuota.netNew || 0) + (periodQuota.software || 0) + (periodQuota.imaging || 0);
-    const repActual = actualMatrix[r.rep] && actualMatrix[r.rep][quotaPeriod];
-    const hasManualActual = repActual && ((repActual.netNew || 0) + (repActual.software || 0) + (repActual.imaging || 0) > 0);
-    const actualSum = hasManualActual ? (repActual.netNew || 0) + (repActual.software || 0) + (repActual.imaging || 0) : r.closedWonAmount;
-    return { name: r.rep, won: actualSum, quota: quotaSum, isManual: hasManualActual };
+    const repActual = (actualMatrix[r.rep] && actualMatrix[r.rep][quotaPeriod]) || EMPTY_ACTUAL_MATRIX[quotaPeriod];
+    const actualSum = (repActual.netNew || 0) + (repActual.software || 0) + (repActual.imaging || 0);
+    return { name: r.rep, won: actualSum, quota: quotaSum };
   });
 
   const avgDealSizeTrend = useMemo(() => computeAvgDealSizeTrend(filteredDeals), [filteredDeals]);
@@ -1569,7 +1581,7 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
             Actual Sales (Manual Entry)
           </div>
           <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
-            Type in what a rep actually sold, by period and category. Whenever the Annual row here is filled in (non-zero), it becomes the primary "actual sold" figure everywhere: the scorecard gauges, forecast, coverage ratio, and the Rep Performance chart below all use it instead of the calculated deal total. Win rate, avg deal cycle, deal count, pipeline, cross-sell/upsell rate, and the breakdowns further down still come from deal records regardless. Leave a rep's Annual row at 0 to fall back to their calculated deal total everywhere.
+            Type in what a rep actually sold, by period and category — this is now the strict source of truth for "sold" everywhere in the app: the scorecard gauges, forecast, coverage ratio, Rep Performance chart, and Closed-Won Breakdown all use these numbers, not deal records. Mock data pre-populates this grid so it's usable right away; edit any cell freely. A rep/period left at 0 shows as 0 sold — nothing falls back to a calculated deal total. Win rate, avg deal cycle, deal count, pipeline, and cross-sell/upsell rate still come from deal records, since those need deal-level detail this grid doesn't capture.
           </div>
           {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1672,7 +1684,7 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
               </div>
             </div>
             <div style={{ fontSize: 11, color: COLORS.inkSoft, marginBottom: 8 }}>
-              Quota comes from the Quota Targets matrix above for the selected period. "Closed Won" uses your Actual Sales entry for that rep/period whenever it's filled in — otherwise it's the calculated total from deal records.
+              Quota comes from the Quota Targets matrix above for the selected period. "Closed Won" is your Actual Sales entry for that rep/period — a rep with nothing entered shows $0, it does not fall back to a calculated deal total.
             </div>
             <ResponsiveContainer width="100%" height={Math.max(220, repChartData.length * 46)}>
               <BarChart data={repChartData} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 4 }}>
@@ -1739,8 +1751,11 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
 
         {/* Revenue breakdowns: industry / imaging brand / software type */}
         <div style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
-          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 12 }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
             Closed-Won Breakdown
+          </div>
+          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 12, lineHeight: 1.5 }}>
+            Totals here reconcile to each rep's Actual Sales figures — the industry/brand/software-type mix comes from deal records (that detail isn't tracked in Actual Sales), but the dollar totals are scaled to match what's actually entered. A rep/category with nothing entered in Actual Sales shows $0 here too.
           </div>
           <div className="no-print" style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
             {Object.keys(breakdownLabels).map((k) => (
