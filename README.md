@@ -1,8 +1,10 @@
 # Fleet Performance Scorecards
 
+[![Launch App](https://img.shields.io/badge/Launch_App-2C4358?style=for-the-badge&logo=googlechrome&logoColor=white)](https://necker44.github.io/kpi-scorecard-generator/)
+
 A rep- and territory-level KPI scorecard generator built for managed print / office technology sales operations — the kind of quota-and-pipeline reporting a Sales Ops or RevOps analyst would build to replace a manual, spreadsheet-driven KPI dashboard.
 
-Live demo: _add your GitHub Pages URL here after first deploy_
+**Live demo:** https://necker44.github.io/kpi-scorecard-generator/
 
 ## What it does
 
@@ -20,7 +22,9 @@ Live demo: _add your GitHub Pages URL here after first deploy_
   - **Upsell rate** — % of a rep's closed-won deals that landed in an account which already had a closed-won deal in the *same* category — repeat/expansion revenue within a category
   - **Avg deal size** — current average deal size across all won deals
 - **Territory roll-up chart** — blended attainment *and* forecast by territory, side by side
-- **Rep performance chart** — every rep's total closed-won vs. total quota in one horizontal bar chart, so reps can be compared against each other at a glance
+- **Quota Targets** — a separate Monthly/Quarterly/Annual quota per rep, independent of the category-split quotas above and independent of what they've actually sold. This is the number they're assigned at the start of the year; pick which period to compare against in the chart below.
+- **Rep performance chart** — every rep's total closed-won vs. their quota target for the selected period (Monthly/Quarterly/Annual) in one horizontal bar chart, so reps can be compared against each other at a glance
+- **Rep &amp; territory filters** — narrow the Avg Deal Size Trend and Closed-Won Breakdown views down to a single rep, a single territory, or both at once
 - **Avg deal size trend** — a line chart of average deal size per category over time (by close month), so you can spot deal sizes shrinking or growing
 - **Closed-won breakdowns** — separate views of closed-won revenue by Industry, Imaging Brand, Software Type, and Cross-Sell/Upsell (by account), filterable by territory
 - **AI-generated performance reads** — optional, per-scorecard plain-language summaries via the Claude API, calling out which of the three categories is strongest and which needs attention
