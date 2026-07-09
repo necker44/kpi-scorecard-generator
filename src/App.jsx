@@ -71,6 +71,9 @@ const DEFAULT_RETENTION_MATRIX = {
 function cloneRetentionMatrix(m) {
   return { monthly: { ...m.monthly }, quarterly: { ...m.quarterly }, annual: { ...m.annual } };
 }
+// Retention/growth quota targets are annual-only — there's no meaningful monthly/quarterly
+// target for a rate metric like NRR the way there is for a dollar sales quota.
+const DEFAULT_RETENTION_QUOTA = { nrr: 100, grr: 90, yoyGrowth: 10 };
 
 // ---------- Mock HubSpot-style data ----------
 const REPS = [
@@ -133,6 +136,7 @@ function generateMockData() {
   const quotaMatrix = {};
   const actualMatrix = {};
   const retentionMatrix = {};
+  const retentionQuota = {};
   let dealId = 1;
 
   REPS.forEach((rep) => {
@@ -221,9 +225,15 @@ function generateMockData() {
       quarterly: { nrr: round1(annualNRR + (rnd() - 0.5) * 5), grr: round1(Math.min(annualGRR + (rnd() - 0.5) * 5, 100)), yoyGrowth: round1(annualYoY + (rnd() - 0.5) * 5) },
       monthly: { nrr: round1(annualNRR + (rnd() - 0.5) * 7), grr: round1(Math.min(annualGRR + (rnd() - 0.5) * 7, 100)), yoyGrowth: round1(annualYoY + (rnd() - 0.5) * 7) },
     };
+    // Annual-only targets — company goals are usually a bit more uniform than actual results.
+    retentionQuota[rep.name] = {
+      nrr: round1(100 + (rnd() - 0.5) * 6),
+      grr: round1(90 + (rnd() - 0.5) * 4),
+      yoyGrowth: round1(10 + (rnd() - 0.5) * 4),
+    };
   });
 
-  return { deals, activities, quotaMatrix, actualMatrix, retentionMatrix };
+  return { deals, activities, quotaMatrix, actualMatrix, retentionMatrix, retentionQuota };
 }
 
 // ---------- File parsing helpers ----------
@@ -824,6 +834,7 @@ function saveToLocalStorage(state) {
       quotaMatrix: state.quotaMatrix,
       actualMatrix: state.actualMatrix,
       retentionMatrix: state.retentionMatrix,
+      retentionQuota: state.retentionQuota,
       fileNames: state.fileNames,
       insights: state.insights,
       deals: serializeDeals(state.deals),
@@ -831,6 +842,7 @@ function saveToLocalStorage(state) {
       manualDeals: serializeDeals(state.manualDeals || []),
       manualRoster: state.manualRoster || [],
       mockRoster: state.mockRoster || [],
+      uploadRoster: state.uploadRoster || [],
       metricOverrides: state.metricOverrides || {},
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
@@ -848,10 +860,12 @@ function loadFromLocalStorage() {
     parsed.manualDeals = deserializeDeals(parsed.manualDeals);
     parsed.manualRoster = parsed.manualRoster || [];
     parsed.mockRoster = parsed.mockRoster || null;
+    parsed.uploadRoster = parsed.uploadRoster || [];
     parsed.metricOverrides = parsed.metricOverrides || {};
     parsed.quotaMatrix = parsed.quotaMatrix || null;
     parsed.actualMatrix = parsed.actualMatrix || {};
     parsed.retentionMatrix = parsed.retentionMatrix || {};
+    parsed.retentionQuota = parsed.retentionQuota || {};
     return parsed;
   } catch (e) {
     console.warn("Couldn't load saved scorecard data:", e);
@@ -1156,6 +1170,7 @@ export default function App() {
   const initialMockRoster = useMemo(() => REPS.map((r) => ({ originalName: r.name, displayName: r.name, territory: r.territory })), []);
   const [mockRoster, setMockRoster] = useState(saved?.mockRoster ?? initialMockRoster);
   const [uploadedDeals, setUploadedDeals] = useState(saved?.deals ?? []);
+  const [uploadRoster, setUploadRoster] = useState(saved?.uploadRoster ?? []);
   const [uploadedActivities, setUploadedActivities] = useState(saved?.activities ?? []);
   const [fileNames, setFileNames] = useState(saved?.fileNames ?? []);
   const [manualRoster, setManualRoster] = useState(saved?.manualRoster ?? []);
@@ -1166,6 +1181,9 @@ export default function App() {
   );
   const [retentionMatrix, setRetentionMatrix] = useState(
     saved?.retentionMatrix && Object.keys(saved.retentionMatrix).length > 0 ? saved.retentionMatrix : mockData.retentionMatrix
+  );
+  const [retentionQuota, setRetentionQuota] = useState(
+    saved?.retentionQuota && Object.keys(saved.retentionQuota).length > 0 ? saved.retentionQuota : mockData.retentionQuota
   );
   const [quotaPeriod, setQuotaPeriod] = useState("annual");
   const [metricOverrides, setMetricOverrides] = useState(saved?.metricOverrides ?? {});
@@ -1198,7 +1216,9 @@ export default function App() {
 
   const deals = source === "mock" ? mockDeals : source === "upload" ? uploadedDeals : manualDeals;
   const activities = source === "mock" ? mockActivities : source === "upload" ? uploadedActivities : [];
-  const roster = source === "manual" ? manualRoster : [];
+  const roster = source === "manual" ? manualRoster
+    : source === "mock" ? mockRoster.map((r) => ({ name: r.displayName, territory: r.territory }))
+    : uploadRoster;
 
   // Whenever the mock tab is active, make sure mock reps have their sample Actual Sales
   // filled in. A rep counts as "not yet populated" if every period/category is 0 — covers
@@ -1247,6 +1267,20 @@ export default function App() {
       });
       return changed ? next : prev;
     });
+    setRetentionQuota((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      mockRoster.forEach((r) => {
+        if (!next[r.displayName]) {
+          const seeded = mockData.retentionQuota[r.originalName];
+          if (seeded) {
+            next[r.displayName] = { ...seeded };
+            changed = true;
+          }
+        }
+      });
+      return changed ? next : prev;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, mockRoster]);
 
@@ -1258,6 +1292,7 @@ export default function App() {
     } else if (source === "upload") {
       setUploadedDeals((d) => d.map((deal) => (deal.rep === oldName ? { ...deal, rep: newName } : deal)));
       setUploadedActivities((a) => a.map((act) => (act.rep === oldName ? { ...act, rep: newName } : act)));
+      setUploadRoster((r) => r.map((x) => (x.name === oldName ? { ...x, name: newName } : x)));
     } else if (source === "manual") {
       setManualRoster((r) => r.map((x) => (x.name === oldName ? { ...x, name: newName } : x)));
       setManualDeals((d) => d.map((deal) => (deal.rep === oldName ? { ...deal, rep: newName } : deal)));
@@ -1277,6 +1312,11 @@ export default function App() {
       if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
       return next;
     });
+    setRetentionQuota((r) => {
+      const next = { ...r };
+      if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
+      return next;
+    });
     setMetricOverrides((o) => {
       if (!o[oldName]) return o;
       const next = { ...o };
@@ -1291,10 +1331,32 @@ export default function App() {
       setMockRoster((r) => r.map((x) => (x.displayName === repName ? { ...x, territory } : x)));
     } else if (source === "upload") {
       setUploadedDeals((d) => d.map((deal) => (deal.rep === repName ? { ...deal, territory } : deal)));
+      setUploadRoster((r) => r.map((x) => (x.name === repName ? { ...x, territory } : x)));
     } else if (source === "manual") {
       setManualRoster((r) => r.map((x) => (x.name === repName ? { ...x, territory } : x)));
       setManualDeals((d) => d.map((deal) => (deal.rep === repName ? { ...deal, territory } : deal)));
     }
+  };
+
+  // Adds a brand-new, zero-deal rep to whichever source is currently active. They show up
+  // immediately in the Reps list, Quota Targets, Actual Sales, Retention & Growth, every chart,
+  // and get their own scorecard — same as any other rep, just starting from a blank slate.
+  const addRepGlobal = () => {
+    const existingNames = new Set(Object.keys(byRep));
+    let n = 1;
+    let name = "New Rep";
+    while (existingNames.has(name)) { n += 1; name = `New Rep ${n}`; }
+
+    if (source === "mock") {
+      setMockRoster((r) => [...r, { originalName: name, displayName: name, territory: "" }]);
+    } else if (source === "upload") {
+      setUploadRoster((r) => [...r, { name, territory: "" }]);
+    } else {
+      setManualRoster((r) => [...r, { name, territory: "" }]);
+    }
+    setQuotaMatrix((q) => ({ ...q, [name]: cloneMatrix(DEFAULT_QUOTA_MATRIX) }));
+    setRetentionMatrix((r) => ({ ...r, [name]: cloneRetentionMatrix(DEFAULT_RETENTION_MATRIX) }));
+    setRetentionQuota((r) => ({ ...r, [name]: { ...DEFAULT_RETENTION_QUOTA } }));
   };
 
   const setMetricOverride = (repName, field, value) => {
@@ -1312,15 +1374,15 @@ export default function App() {
   React.useEffect(() => {
     if (source === "mock" && uploadedDeals.length === 0 && manualDeals.length === 0 && manualRoster.length === 0 && Object.keys(insights).length === 0 && Object.keys(metricOverrides).length === 0 && Object.keys(actualMatrix).length === 0) return;
     saveToLocalStorage({
-      source, quotaMatrix, actualMatrix, retentionMatrix, fileNames, insights,
+      source, quotaMatrix, actualMatrix, retentionMatrix, retentionQuota, fileNames, insights,
       deals: uploadedDeals, activities: uploadedActivities,
-      manualDeals, manualRoster, mockRoster, metricOverrides,
+      manualDeals, manualRoster, mockRoster, uploadRoster, metricOverrides,
     });
     setJustSaved(true);
     const t = setTimeout(() => setJustSaved(false), 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, quotaMatrix, actualMatrix, retentionMatrix, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, metricOverrides]);
+  }, [source, quotaMatrix, actualMatrix, retentionMatrix, retentionQuota, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, uploadRoster, metricOverrides]);
 
   const quotasForKPI = useMemo(() => {
     const out = {};
@@ -1412,6 +1474,13 @@ export default function App() {
         });
         return next;
       });
+      setRetentionQuota((r) => {
+        const next = { ...r };
+        repNames.forEach((rep) => {
+          if (!(rep in next)) next[rep] = { ...DEFAULT_RETENTION_QUOTA };
+        });
+        return next;
+      });
       setSource("upload");
     } catch (e) {
       setError("Couldn't read one of those files. Check that it's a valid CSV or Excel export.");
@@ -1423,6 +1492,7 @@ export default function App() {
   const resetUploads = () => {
     setUploadedDeals([]);
     setUploadedActivities([]);
+    setUploadRoster([]);
     setFileNames([]);
     setInsights({});
     setQuotaMatrix(mockData.quotaMatrix);
@@ -1751,10 +1821,18 @@ QUESTION: ${q}`;
 
         {/* Reps: name + territory, editable regardless of source */}
         <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
-          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
-            Reps
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink }}>
+              Reps
+            </div>
+            <button
+              onClick={addRepGlobal}
+              style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${COLORS.steel}`, color: COLORS.steel, borderRadius: 4, padding: "6px 12px", fontSize: 12.5, cursor: "pointer" }}
+            >
+              <Plus size={14} /> Add Rep
+            </button>
           </div>
-          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 12 }}>Click a name or territory to edit it — works for mock, uploaded, and manual reps alike.</div>
+          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 12 }}>Click a name or territory to edit it — works for mock, uploaded, and manual reps alike. "Add Rep" adds a new rep to whichever tab is currently active, with default quotas and targets ready to edit.</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
             {Object.values(byRep).map((r) => (
@@ -1786,7 +1864,7 @@ QUESTION: ${q}`;
             Quota Targets
           </div>
           <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
-            Each rep's assigned quota, broken out by period and by category — independent of what they've actually sold. Annual feeds the scorecard gauges below; pick a period in "Rep Performance: Total vs Quota" to compare against that specific target.
+            Each rep's assigned quota, broken out by period and by category — independent of what they've actually sold. Annual feeds the scorecard gauges below; pick a period in "Rep Performance: Total vs Quota" to compare against that specific target. Retention &amp; Growth targets (NRR, GRR, YoY growth) are annual-only, since a monthly or quarterly target for a rate metric isn't meaningful the way it is for a dollar quota.
           </div>
           {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1828,6 +1906,32 @@ QUESTION: ${q}`;
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>Retention &amp; Growth Targets (Annual only)</div>
+                    <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+                      {RETENTION_METRICS.map((rm) => {
+                        const rq = retentionQuota[r.rep] || DEFAULT_RETENTION_QUOTA;
+                        return (
+                          <label key={rm.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: COLORS.inkSoft }}>
+                            {rm.label}
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={rq[rm.key] ?? ""}
+                              onChange={(e) =>
+                                setRetentionQuota((q) => ({
+                                  ...q,
+                                  [r.rep]: { ...(q[r.rep] || DEFAULT_RETENTION_QUOTA), [rm.key]: parseFloat(e.target.value) || 0 },
+                                }))
+                              }
+                              style={{ width: 70, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "5px 8px", fontSize: 13, textAlign: "right" }}
+                            />
+                            <span style={{ fontSize: 12 }}>{rm.suffix}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               );
