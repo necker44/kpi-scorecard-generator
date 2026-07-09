@@ -129,6 +129,40 @@ function seededRandom(seed) {
   };
 }
 
+// Generates a full Monthly/Quarterly/Annual x Net New/Software/Imaging Actual Sales matrix
+// directly from a rep's quota, using rough managed-print/MSP industry attainment benchmarks
+// rather than bucketing sparse individual deals (which left plenty of real gaps at $0).
+// Net New is hardest to attain consistently (new-logo acquisition); Imaging is the most
+// mature, predictable line; Software attach is the newest motion and the most variable.
+const ATTAINMENT_RANGES = {
+  netNew: [0.65, 1.05],
+  software: [0.55, 1.15],
+  imaging: [0.80, 1.12],
+};
+function generateActualsFromQuota(quota, rnd) {
+  const q = quota || DEFAULT_QUOTA_MATRIX;
+  const annualAttainment = {};
+  CATEGORIES.forEach(({ key }) => {
+    const [lo, hi] = ATTAINMENT_RANGES[key];
+    annualAttainment[key] = lo + rnd() * (hi - lo);
+  });
+  const buildPeriod = (periodKey, varianceSpread) => {
+    const period = {};
+    CATEGORIES.forEach(({ key }) => {
+      const base = annualAttainment[key];
+      const varied = Math.max(0.15, base + (rnd() - 0.5) * varianceSpread);
+      const quotaVal = (q[periodKey] && q[periodKey][key]) || 0;
+      period[key] = Math.round(quotaVal * varied);
+    });
+    return period;
+  };
+  return {
+    annual: buildPeriod("annual", 0), // annual uses the base attainment rate exactly
+    quarterly: buildPeriod("quarterly", 0.15),
+    monthly: buildPeriod("monthly", 0.25),
+  };
+}
+
 function generateMockData() {
   const rnd = seededRandom(42);
   const deals = [];
@@ -152,7 +186,6 @@ function generateMockData() {
     };
     const repAccounts = sampleWithoutReplacement(ACCOUNT_POOL, 6 + Math.floor(rnd() * 4), rnd);
     const dealCount = 16 + Math.floor(rnd() * 12);
-    const repDealsForActual = [];
     for (let i = 0; i < dealCount; i++) {
       const stageRoll = rnd();
       const stage =
@@ -190,27 +223,14 @@ function generateMockData() {
         closeDate: stage.startsWith("Closed") ? closeDate : null,
       };
       deals.push(deal);
-      repDealsForActual.push(deal);
     }
     const activityCount = 60 + Math.floor(rnd() * 140);
     activities.push({ rep: rep.name, territory: rep.territory, count: activityCount });
 
-    // Derive Actual Sales (Monthly/Quarterly/Annual) from this rep's own closed-won deals,
-    // bucketed by real close-date months. Mock deals span Jan(0)-May(4) 2026 by construction,
-    // so "this month" = May, "this quarter" = Mar-May, "this year" = the full Jan-May window.
-    const won = repDealsForActual.filter((d) => d.stage === "Closed Won" && d.closeDate);
-    const sumByMonths = (months) => {
-      const sums = { netNew: 0, software: 0, imaging: 0 };
-      won.forEach((d) => {
-        if (months.has(d.closeDate.getMonth())) sums[d.category] += d.amount || 0;
-      });
-      return sums;
-    };
-    actualMatrix[rep.name] = {
-      monthly: sumByMonths(new Set([4])),
-      quarterly: sumByMonths(new Set([2, 3, 4])),
-      annual: sumByMonths(new Set([0, 1, 2, 3, 4])),
-    };
+    // Actual Sales: generated directly from this rep's quota using industry attainment
+    // benchmarks, guaranteeing every period/category cell is populated with a realistic
+    // figure (rather than bucketing sparse individual deals, which left real gaps at $0).
+    actualMatrix[rep.name] = generateActualsFromQuota(quotaMatrix[rep.name], rnd);
 
     // Realistic MSP/managed-print benchmarks: NRR ~95-112% (expansion can push over 100),
     // GRR ~85-96% (always <=100, can't gain revenue by definition), YoY growth ~2-16%.
@@ -693,7 +713,7 @@ function Scorecard({ data, insight, onGenerateInsight, insightLoading, overrides
               <EditableMetric label="Avg cycle" rawValue={ov.avgCycle != null ? ov.avgCycle : data.avgCycle} isOverride={ov.avgCycle != null} format={(v) => (v == null ? "—" : Math.round(v) + "d")} onSave={(v) => onSetOverride("avgCycle", v)} onClear={() => onClearOverride("avgCycle")} />
               <Metric label="Pipeline" value={fmtMoney(data.pipelineAmount)} />
               <EditableMetric label="Deals" rawValue={ov.dealCount != null ? ov.dealCount : data.dealCount} isOverride={ov.dealCount != null} format={(v) => (v == null ? "—" : Math.round(v))} onSave={(v) => onSetOverride("dealCount", v)} onClear={() => onClearOverride("dealCount")} />
-              <Metric label="Won" value={data.wonCount} />
+              <EditableMetric label="Won" rawValue={ov.wonCount != null ? ov.wonCount : data.wonCount} isOverride={ov.wonCount != null} format={(v) => (v == null ? "—" : Math.round(v))} onSave={(v) => onSetOverride("wonCount", v)} onClear={() => onClearOverride("wonCount")} />
               <Metric label="Activities" value={data.activityTotal || "—"} />
               <Metric label="Coverage" value={data.coverage == null ? "Met" : data.coverage.toFixed(1) + "×"} />
               <EditableMetric label="Cross-sell" rawValue={ov.crossSellRate != null ? ov.crossSellRate : data.crossSellRate} isOverride={ov.crossSellRate != null} format={(v) => (v == null ? "—" : Math.round(v) + "%")} onSave={(v) => onSetOverride("crossSellRate", v)} onClear={() => onClearOverride("crossSellRate")} />
@@ -703,7 +723,7 @@ function Scorecard({ data, insight, onGenerateInsight, insightLoading, overrides
               <Metric label="Gross Renewal Rate" value={ret.grr + "%"} />
               <Metric label="YoY Growth (Existing)" value={ret.yoyGrowth + "%"} />
             </div>
-            <div style={{ fontSize: 10.5, color: COLORS.inkSoft, marginTop: 6 }}>Win rate, avg cycle, deals, cross-sell, upsell, and avg deal size are editable — click a value to type your own, clear the field to go back to the calculated number. Retention &amp; growth figures are set in the Retention &amp; Growth panel above.</div>
+            <div style={{ fontSize: 10.5, color: COLORS.inkSoft, marginTop: 6 }}>Win rate, avg cycle, deals, won, cross-sell, upsell, and avg deal size are editable — click a value to type your own, clear the field to go back to the calculated number. Retention &amp; growth figures are set in the Retention &amp; Growth panel above.</div>
 
             <div style={{ marginTop: 14 }}>
               {insight ? (
@@ -1357,6 +1377,11 @@ export default function App() {
     setQuotaMatrix((q) => ({ ...q, [name]: cloneMatrix(DEFAULT_QUOTA_MATRIX) }));
     setRetentionMatrix((r) => ({ ...r, [name]: cloneRetentionMatrix(DEFAULT_RETENTION_MATRIX) }));
     setRetentionQuota((r) => ({ ...r, [name]: { ...DEFAULT_RETENTION_QUOTA } }));
+    if (source === "mock") {
+      // Give a brand-new mock rep realistic starting actuals too, rather than a flat $0 that
+      // would look broken next to a populated quota.
+      setActualMatrix((a) => ({ ...a, [name]: generateActualsFromQuota(DEFAULT_QUOTA_MATRIX, Math.random) }));
+    }
   };
 
   const setMetricOverride = (repName, field, value) => {
@@ -1510,6 +1535,7 @@ export default function App() {
       winRate: ov.winRate != null ? ov.winRate : repRaw.winRate,
       avgCycle: ov.avgCycle != null ? ov.avgCycle : repRaw.avgCycle,
       dealCount: ov.dealCount != null ? ov.dealCount : repRaw.dealCount,
+      wonCount: ov.wonCount != null ? ov.wonCount : repRaw.wonCount,
       crossSellRate: ov.crossSellRate != null ? ov.crossSellRate : repRaw.crossSellRate,
       upsellRate: ov.upsellRate != null ? ov.upsellRate : repRaw.upsellRate,
       avgDealSize: ov.avgDealSize != null ? ov.avgDealSize : repRaw.avgDealSize,
@@ -1533,6 +1559,7 @@ Cross-sell rate: ${fmtPct(rep.crossSellRate)} of won deals sold into an existing
 Upsell rate: ${fmtPct(rep.upsellRate)} of won deals that expanded an existing account within the same category
 Avg deal size: ${fmtMoney(rep.avgDealSize)}
 Win rate: ${fmtPct(rep.winRate)}
+Won deals: ${rep.wonCount} of ${rep.dealCount} total deals
 Avg deal cycle: ${rep.avgCycle == null ? "unknown" : Math.round(rep.avgCycle) + " days"}
 Open pipeline: ${fmtMoney(rep.pipelineAmount)}
 Activity count this period: ${rep.activityTotal || "unknown"}`;
