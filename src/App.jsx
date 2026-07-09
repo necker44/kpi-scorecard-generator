@@ -55,6 +55,23 @@ function cloneMatrix(m) {
   return { monthly: { ...m.monthly }, quarterly: { ...m.quarterly }, annual: { ...m.annual } };
 }
 
+// Retention/growth metrics — these describe the existing customer base (renewals, expansion),
+// so they're tracked per period but not split by Net New/Software/Imaging category the way
+// dollar sales are. Lives right alongside Actual Sales and gets mock-populated the same way.
+const RETENTION_METRICS = [
+  { key: "nrr", label: "Net Renewal Retention", suffix: "%" },
+  { key: "grr", label: "Gross Renewal Rate", suffix: "%" },
+  { key: "yoyGrowth", label: "YoY Growth (Existing)", suffix: "%" },
+];
+const DEFAULT_RETENTION_MATRIX = {
+  monthly: { nrr: 100, grr: 90, yoyGrowth: 8 },
+  quarterly: { nrr: 100, grr: 90, yoyGrowth: 8 },
+  annual: { nrr: 100, grr: 90, yoyGrowth: 8 },
+};
+function cloneRetentionMatrix(m) {
+  return { monthly: { ...m.monthly }, quarterly: { ...m.quarterly }, annual: { ...m.annual } };
+}
+
 // ---------- Mock HubSpot-style data ----------
 const REPS = [
   { name: "Marcus Alvarado", territory: "OKC Metro" },
@@ -115,6 +132,7 @@ function generateMockData() {
   const activities = [];
   const quotaMatrix = {};
   const actualMatrix = {};
+  const retentionMatrix = {};
   let dealId = 1;
 
   REPS.forEach((rep) => {
@@ -189,9 +207,23 @@ function generateMockData() {
       quarterly: sumByMonths(new Set([2, 3, 4])),
       annual: sumByMonths(new Set([0, 1, 2, 3, 4])),
     };
+
+    // Realistic MSP/managed-print benchmarks: NRR ~95-112% (expansion can push over 100),
+    // GRR ~85-96% (always <=100, can't gain revenue by definition), YoY growth ~2-16%.
+    // Quarterly/monthly carry the same underlying rate with small natural variance rather
+    // than being summed/divided like dollar quotas, since these are ratios, not totals.
+    const round1 = (n) => Math.round(n * 10) / 10;
+    const annualNRR = 95 + rnd() * 17;
+    const annualGRR = 85 + rnd() * 11;
+    const annualYoY = 2 + rnd() * 14;
+    retentionMatrix[rep.name] = {
+      annual: { nrr: round1(annualNRR), grr: round1(annualGRR), yoyGrowth: round1(annualYoY) },
+      quarterly: { nrr: round1(annualNRR + (rnd() - 0.5) * 5), grr: round1(Math.min(annualGRR + (rnd() - 0.5) * 5, 100)), yoyGrowth: round1(annualYoY + (rnd() - 0.5) * 5) },
+      monthly: { nrr: round1(annualNRR + (rnd() - 0.5) * 7), grr: round1(Math.min(annualGRR + (rnd() - 0.5) * 7, 100)), yoyGrowth: round1(annualYoY + (rnd() - 0.5) * 7) },
+    };
   });
 
-  return { deals, activities, quotaMatrix, actualMatrix };
+  return { deals, activities, quotaMatrix, actualMatrix, retentionMatrix };
 }
 
 // ---------- File parsing helpers ----------
@@ -493,6 +525,37 @@ function groupWonAmountBy(deals, field) {
   return Object.values(map).sort((a, b) => b.amount - a.amount);
 }
 
+// Per-rep industry/imaging-brand/software-type mix, dollar totals scaled to match that rep's
+// Actual Sales figures per category (same approach as the Closed-Won Breakdown chart), used to
+// feed the "Ask About Your Data" Q&A with specifics an aggregate quota number can't answer.
+function computeRepBreakdownMix(deals, actualMatrix, repName) {
+  const repDeals = deals.filter((d) => d.rep === repName);
+  const scale = {};
+  CATEGORIES.forEach(({ key }) => {
+    const dealTotal = repDeals.filter((d) => d.category === key && d.stage.toLowerCase().includes("won")).reduce((s, d) => s + (d.amount || 0), 0);
+    const actualTotal = (actualMatrix[repName] && actualMatrix[repName].annual && actualMatrix[repName].annual[key]) || 0;
+    scale[key] = dealTotal > 0 ? actualTotal / dealTotal : 0;
+  });
+  const wonScaled = repDeals
+    .filter((d) => d.stage.toLowerCase().includes("won"))
+    .map((d) => ({ ...d, amount: (d.amount || 0) * (scale[d.category] || 0) }));
+
+  const groupBy = (list, field) => {
+    const map = {};
+    list.forEach((d) => {
+      const k = d[field] || "Unspecified";
+      map[k] = (map[k] || 0) + d.amount;
+    });
+    return map;
+  };
+
+  return {
+    industry: groupBy(wonScaled, "industry"),
+    imagingBrand: groupBy(wonScaled.filter((d) => d.category === "imaging"), "imagingBrand"),
+    softwareType: groupBy(wonScaled.filter((d) => d.category === "software"), "softwareType"),
+  };
+}
+
 function fmtMoney(n) {
   if (n == null) return "—";
   return "$" + Math.round(n).toLocaleString();
@@ -555,7 +618,8 @@ function TonerGauge({ pct, label, compact = false }) {
 }
 
 // ---------- Scorecard ----------
-function Scorecard({ data, insight, onGenerateInsight, insightLoading, overrides, onSetOverride, onClearOverride }) {
+function Scorecard({ data, insight, onGenerateInsight, insightLoading, overrides, onSetOverride, onClearOverride, retention }) {
+  const ret = retention || DEFAULT_RETENTION_MATRIX.annual;
   const [open, setOpen] = useState(true);
   const ov = overrides || {};
   const attainmentColor =
@@ -625,8 +689,11 @@ function Scorecard({ data, insight, onGenerateInsight, insightLoading, overrides
               <EditableMetric label="Cross-sell" rawValue={ov.crossSellRate != null ? ov.crossSellRate : data.crossSellRate} isOverride={ov.crossSellRate != null} format={(v) => (v == null ? "—" : Math.round(v) + "%")} onSave={(v) => onSetOverride("crossSellRate", v)} onClear={() => onClearOverride("crossSellRate")} />
               <EditableMetric label="Upsell" rawValue={ov.upsellRate != null ? ov.upsellRate : data.upsellRate} isOverride={ov.upsellRate != null} format={(v) => (v == null ? "—" : Math.round(v) + "%")} onSave={(v) => onSetOverride("upsellRate", v)} onClear={() => onClearOverride("upsellRate")} />
               <EditableMetric label="Avg deal size" rawValue={ov.avgDealSize != null ? ov.avgDealSize : data.avgDealSize} isOverride={ov.avgDealSize != null} format={(v) => fmtMoney(v)} onSave={(v) => onSetOverride("avgDealSize", v)} onClear={() => onClearOverride("avgDealSize")} />
+              <Metric label="Net Renewal Retention" value={ret.nrr + "%"} />
+              <Metric label="Gross Renewal Rate" value={ret.grr + "%"} />
+              <Metric label="YoY Growth (Existing)" value={ret.yoyGrowth + "%"} />
             </div>
-            <div style={{ fontSize: 10.5, color: COLORS.inkSoft, marginTop: 6 }}>Win rate, avg cycle, deals, cross-sell, upsell, and avg deal size are editable — click a value to type your own, clear the field to go back to the calculated number.</div>
+            <div style={{ fontSize: 10.5, color: COLORS.inkSoft, marginTop: 6 }}>Win rate, avg cycle, deals, cross-sell, upsell, and avg deal size are editable — click a value to type your own, clear the field to go back to the calculated number. Retention &amp; growth figures are set in the Retention &amp; Growth panel above.</div>
 
             <div style={{ marginTop: 14 }}>
               {insight ? (
@@ -756,6 +823,7 @@ function saveToLocalStorage(state) {
       source: state.source,
       quotaMatrix: state.quotaMatrix,
       actualMatrix: state.actualMatrix,
+      retentionMatrix: state.retentionMatrix,
       fileNames: state.fileNames,
       insights: state.insights,
       deals: serializeDeals(state.deals),
@@ -783,6 +851,7 @@ function loadFromLocalStorage() {
     parsed.metricOverrides = parsed.metricOverrides || {};
     parsed.quotaMatrix = parsed.quotaMatrix || null;
     parsed.actualMatrix = parsed.actualMatrix || {};
+    parsed.retentionMatrix = parsed.retentionMatrix || {};
     return parsed;
   } catch (e) {
     console.warn("Couldn't load saved scorecard data:", e);
@@ -805,7 +874,7 @@ function makeDealId() {
   return `m-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotaMatrix, setQuotaMatrix, setActualMatrix }) {
+function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotaMatrix, setQuotaMatrix, setActualMatrix, setRetentionMatrix }) {
   const repNames = roster.map((r) => r.name);
 
   const addRep = () => {
@@ -814,6 +883,7 @@ function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotaMatrix, se
     while (repNames.includes(name)) { n += 1; name = `New Rep ${roster.length + n}`; }
     setRoster((r) => [...r, { name, territory: "" }]);
     setQuotaMatrix((q) => ({ ...q, [name]: cloneMatrix(DEFAULT_QUOTA_MATRIX) }));
+    setRetentionMatrix((r) => ({ ...r, [name]: cloneRetentionMatrix(DEFAULT_RETENTION_MATRIX) }));
   };
 
   const renameRep = (index, newName) => {
@@ -840,6 +910,14 @@ function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotaMatrix, se
       }
       return next;
     });
+    setRetentionMatrix((r) => {
+      const next = { ...r };
+      if (next[oldName]) {
+        next[newName] = next[oldName];
+        delete next[oldName];
+      }
+      return next;
+    });
   };
 
   const updateTerritory = (index, territory) => {
@@ -859,6 +937,11 @@ function ManualEntryEditor({ roster, setRoster, deals, setDeals, quotaMatrix, se
     });
     setActualMatrix((a) => {
       const next = { ...a };
+      delete next[name];
+      return next;
+    });
+    setRetentionMatrix((r) => {
+      const next = { ...r };
       delete next[name];
       return next;
     });
@@ -1081,6 +1164,9 @@ export default function App() {
   const [actualMatrix, setActualMatrix] = useState(
     saved?.actualMatrix && Object.keys(saved.actualMatrix).length > 0 ? saved.actualMatrix : mockData.actualMatrix
   );
+  const [retentionMatrix, setRetentionMatrix] = useState(
+    saved?.retentionMatrix && Object.keys(saved.retentionMatrix).length > 0 ? saved.retentionMatrix : mockData.retentionMatrix
+  );
   const [quotaPeriod, setQuotaPeriod] = useState("annual");
   const [metricOverrides, setMetricOverrides] = useState(saved?.metricOverrides ?? {});
   const [parsing, setParsing] = useState(false);
@@ -1092,6 +1178,9 @@ export default function App() {
   const [breakdownTab, setBreakdownTab] = useState("industry");
   const [apiKey, setApiKey] = useState("");
   const [showKeyInput, setShowKeyInput] = useState(false);
+  const [qaQuestion, setQaQuestion] = useState("");
+  const [qaHistory, setQaHistory] = useState([]);
+  const [qaLoading, setQaLoading] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
 
   // Mock deals/activities carry their original generated rep names — remap them through
@@ -1139,6 +1228,28 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, mockRoster]);
 
+  // Same idea for Retention & Growth — seed any mock rep missing an entry with their sample
+  // NRR/GRR/YoY numbers. Unlike Actual Sales, 0% is a plausible real value here, so "missing
+  // entirely" (rather than "all zero") is what triggers a re-seed.
+  React.useEffect(() => {
+    if (source !== "mock") return;
+    setRetentionMatrix((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      mockRoster.forEach((r) => {
+        if (!next[r.displayName]) {
+          const seeded = mockData.retentionMatrix[r.originalName];
+          if (seeded) {
+            next[r.displayName] = cloneRetentionMatrix(seeded);
+            changed = true;
+          }
+        }
+      });
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, mockRoster]);
+
   // Renaming/re-territorying works the same way regardless of which data source is active.
   const renameRepGlobal = (oldName, newName) => {
     if (!newName || newName === oldName) return;
@@ -1158,6 +1269,11 @@ export default function App() {
     });
     setActualMatrix((a) => {
       const next = { ...a };
+      if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
+      return next;
+    });
+    setRetentionMatrix((r) => {
+      const next = { ...r };
       if (next[oldName]) { next[newName] = next[oldName]; delete next[oldName]; }
       return next;
     });
@@ -1196,7 +1312,7 @@ export default function App() {
   React.useEffect(() => {
     if (source === "mock" && uploadedDeals.length === 0 && manualDeals.length === 0 && manualRoster.length === 0 && Object.keys(insights).length === 0 && Object.keys(metricOverrides).length === 0 && Object.keys(actualMatrix).length === 0) return;
     saveToLocalStorage({
-      source, quotaMatrix, actualMatrix, fileNames, insights,
+      source, quotaMatrix, actualMatrix, retentionMatrix, fileNames, insights,
       deals: uploadedDeals, activities: uploadedActivities,
       manualDeals, manualRoster, mockRoster, metricOverrides,
     });
@@ -1204,7 +1320,7 @@ export default function App() {
     const t = setTimeout(() => setJustSaved(false), 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, quotaMatrix, actualMatrix, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, metricOverrides]);
+  }, [source, quotaMatrix, actualMatrix, retentionMatrix, fileNames, insights, uploadedDeals, uploadedActivities, manualDeals, manualRoster, mockRoster, metricOverrides]);
 
   const quotasForKPI = useMemo(() => {
     const out = {};
@@ -1289,6 +1405,13 @@ export default function App() {
         });
         return next;
       });
+      setRetentionMatrix((r) => {
+        const next = { ...r };
+        repNames.forEach((rep) => {
+          if (!(rep in next)) next[rep] = cloneRetentionMatrix(DEFAULT_RETENTION_MATRIX);
+        });
+        return next;
+      });
       setSource("upload");
     } catch (e) {
       setError("Couldn't read one of those files. Check that it's a valid CSV or Excel export.");
@@ -1369,6 +1492,69 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
     }
   };
 
+  // ---------- Ask About Your Data ----------
+  const buildDataSummary = () => {
+    const lines = Object.values(byRep).map((r) => {
+      const mix = computeRepBreakdownMix(deals, actualMatrix, r.rep);
+      const fmtMix = (obj) => Object.entries(obj).filter(([, v]) => v > 0).map(([k, v]) => `${k} ${fmtMoney(v)}`).join(", ") || "none";
+      const catLine = CATEGORIES.map(({ key, label }) => `${label}: ${fmtMoney(r.categories[key].won)} of ${fmtMoney(r.categories[key].quota)} quota (${fmtPct(r.categories[key].attainment)})`).join("; ");
+      const ret = (retentionMatrix[r.rep] && retentionMatrix[r.rep].annual) || DEFAULT_RETENTION_MATRIX.annual;
+      return `${r.rep} (${r.territory}):
+  Actual sales — ${catLine}; Total ${fmtMoney(r.closedWonAmount)} of ${fmtMoney(r.quota)} (${fmtPct(r.attainment)})
+  Forecast: ${fmtMoney(r.forecastAmount)} (${fmtPct(r.forecastAttainment)}); Coverage: ${r.coverage == null ? "quota met" : r.coverage.toFixed(1) + "x"}
+  Win rate: ${fmtPct(r.winRate)}; Avg cycle: ${r.avgCycle == null ? "n/a" : Math.round(r.avgCycle) + "d"}; Deals: ${r.dealCount} (${r.wonCount} won); Avg deal size: ${fmtMoney(r.avgDealSize)}
+  Cross-sell: ${fmtPct(r.crossSellRate)}; Upsell: ${fmtPct(r.upsellRate)}; Activities: ${r.activityTotal || 0}; Open pipeline: ${fmtMoney(r.pipelineAmount)}
+  Net Renewal Retention: ${ret.nrr}%; Gross Renewal Rate: ${ret.grr}%; YoY growth from existing customers: ${ret.yoyGrowth}% (annual)
+  Software type mix (won $): ${fmtMix(mix.softwareType)}
+  Imaging brand mix (won $): ${fmtMix(mix.imagingBrand)}
+  Industry mix (won $): ${fmtMix(mix.industry)}`;
+    });
+    return lines.join("\n\n");
+  };
+
+  const askDataQuestion = async () => {
+    if (!apiKey) {
+      setShowKeyInput(true);
+      return;
+    }
+    const q = qaQuestion.trim();
+    if (!q) return;
+    setQaLoading(true);
+    try {
+      const summary = buildDataSummary();
+      const prompt = `You are a sales operations analyst assistant. Answer the question using ONLY the data below — don't invent numbers. Be concise (2-4 sentences), name specific reps and figures, and say plainly if the data doesn't cover what's being asked.
+
+DATA (per rep, current period):
+${summary}
+
+QUESTION: ${q}`;
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 400,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      if (!response.ok) throw new Error("API error");
+      const data = await response.json();
+      const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
+      setQaHistory((h) => [...h, { question: q, answer: text || "No answer available." }]);
+      setQaQuestion("");
+    } catch (e) {
+      setQaHistory((h) => [...h, { question: q, answer: "Couldn't get an answer right now — check that your API key is valid." }]);
+    } finally {
+      setQaLoading(false);
+    }
+  };
+
   const territoryChartData = Object.values(territories).map((t) => ({
     name: t.territory,
     attainment: t.quota > 0 ? Math.round((t.closedWonAmount / t.quota) * 100) : 0,
@@ -1382,6 +1568,12 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
     const repActual = (actualMatrix[r.rep] && actualMatrix[r.rep][quotaPeriod]) || EMPTY_ACTUAL_MATRIX[quotaPeriod];
     const actualSum = (repActual.netNew || 0) + (repActual.software || 0) + (repActual.imaging || 0);
     return { name: r.rep, won: actualSum, quota: quotaSum };
+  });
+
+  const retentionChartData = repList.map((r) => {
+    const m = retentionMatrix[r.rep] || DEFAULT_RETENTION_MATRIX;
+    const period = m[quotaPeriod] || DEFAULT_RETENTION_MATRIX[quotaPeriod];
+    return { name: r.rep, nrr: period.nrr, grr: period.grr, yoyGrowth: period.yoyGrowth };
   });
 
   const avgDealSizeTrend = useMemo(() => computeAvgDealSizeTrend(filteredDeals), [filteredDeals]);
@@ -1509,10 +1701,53 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
               quotaMatrix={quotaMatrix}
               setQuotaMatrix={setQuotaMatrix}
               setActualMatrix={setActualMatrix}
+              setRetentionMatrix={setRetentionMatrix}
             />
           )}
         </div>
 
+
+        {/* Ask About Your Data — Q&A over the current dataset via the Claude API */}
+        <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+            <Sparkles size={16} /> Ask About Your Data
+          </div>
+          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 12, lineHeight: 1.5 }}>
+            Ask a plain-language question about the current reps — e.g. "Who has the highest Cybersecurity sales?" or "Who has the best closing rate?" Claude answers using the actual sales, quotas, win rates, and industry/brand/software-type mix currently loaded, nothing outside it.
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              type="text"
+              value={qaQuestion}
+              onChange={(e) => setQaQuestion(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !qaLoading) askDataQuestion(); }}
+              placeholder="Who has the highest Cybersecurity sales?"
+              style={{ flex: 1, minWidth: 220, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "8px 12px", fontSize: 13.5 }}
+            />
+            <button
+              onClick={askDataQuestion}
+              disabled={qaLoading || !qaQuestion.trim()}
+              style={{
+                display: "flex", alignItems: "center", gap: 6, background: COLORS.steel, color: "#FFF",
+                border: "none", borderRadius: 4, padding: "8px 16px", fontSize: 13.5, fontWeight: 500,
+                cursor: qaLoading || !qaQuestion.trim() ? "default" : "pointer", opacity: qaLoading || !qaQuestion.trim() ? 0.6 : 1,
+              }}
+            >
+              {qaLoading ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
+              {qaLoading ? "Thinking…" : "Ask"}
+            </button>
+          </div>
+          {qaHistory.length > 0 && (
+            <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+              {[...qaHistory].reverse().map((qa, i) => (
+                <div key={i} style={{ background: COLORS.paperDim, borderRadius: 4, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.ink, marginBottom: 4 }}>{qa.question}</div>
+                  <div style={{ fontSize: 13.5, color: COLORS.ink, lineHeight: 1.5 }}>{qa.answer}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Reps: name + territory, editable regardless of source */}
         <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
@@ -1686,6 +1921,66 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
           </div>
         </div>
 
+        {/* Retention & growth — NRR, GRR, YoY growth from existing customers. Per period,
+            not per category, since these describe the existing base rather than new sales. */}
+        <div className="no-print" style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: 18, marginBottom: 24 }}>
+          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 4 }}>
+            Retention &amp; Growth
+          </div>
+          <div style={{ fontSize: 11.5, color: COLORS.inkSoft, marginBottom: 14, lineHeight: 1.5 }}>
+            Net Renewal Retention, Gross Renewal Rate, and year-over-year growth from existing customers — tracked per period, not split by category, since these describe the existing base rather than new sales. Mock data pre-populates realistic benchmarks (NRR ~95-112%, GRR ~85-96%, YoY growth ~2-16%); edit any cell.
+          </div>
+          {Object.keys(byRep).length === 0 && <div style={{ color: COLORS.inkSoft, fontSize: 13 }}>No reps loaded yet.</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            {Object.values(byRep).map((r) => {
+              const m = retentionMatrix[r.rep] || DEFAULT_RETENTION_MATRIX;
+              return (
+                <div key={r.rep} style={{ borderBottom: `1px solid ${COLORS.paperDim}`, paddingBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.ink, marginBottom: 8 }}>{r.rep}</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 10px 6px 0" }}></th>
+                          {RETENTION_METRICS.map((rm) => (
+                            <th key={rm.key} style={{ textAlign: "left", fontSize: 10.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.3, padding: "0 10px 6px" }}>{rm.label}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {QUOTA_PERIODS.map((p) => (
+                          <tr key={p.key}>
+                            <td style={{ fontSize: 11.5, color: COLORS.inkSoft, padding: "4px 10px 4px 0", whiteSpace: "nowrap" }}>{p.label}</td>
+                            {RETENTION_METRICS.map((rm) => (
+                              <td key={rm.key} style={{ padding: "4px 10px" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    value={(m[p.key] && m[p.key][rm.key]) ?? ""}
+                                    onChange={(e) =>
+                                      setRetentionMatrix((q) => {
+                                        const prev = q[r.rep] || cloneRetentionMatrix(DEFAULT_RETENTION_MATRIX);
+                                        return { ...q, [r.rep]: { ...prev, [p.key]: { ...prev[p.key], [rm.key]: parseFloat(e.target.value) || 0 } } };
+                                      })
+                                    }
+                                    style={{ width: 80, border: `1px solid ${COLORS.line}`, borderRadius: 4, padding: "5px 8px", fontSize: 13, textAlign: "right" }}
+                                  />
+                                  <span style={{ fontSize: 12, color: COLORS.inkSoft }}>{rm.suffix}</span>
+                                </div>
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Territory rollup */}
         {territoryChartData.length > 0 && (
           <div style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: "18px 18px 8px", marginBottom: 24 }}>
@@ -1747,7 +2042,26 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
           </div>
         )}
 
-        {/* Filters — apply to Avg Deal Size Trend and the Closed-Won Breakdown below */}
+        {/* Retention & growth by rep, for the same period picked above */}
+        {retentionChartData.length > 0 && (
+          <div style={{ background: "#FFFFFF", border: `1px solid ${COLORS.line}`, borderRadius: 6, padding: "18px 18px 8px", marginBottom: 24 }}>
+            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4, color: COLORS.ink, marginBottom: 6 }}>
+              Retention &amp; Growth by Rep ({QUOTA_PERIODS.find((p) => p.key === quotaPeriod).label})
+            </div>
+            <ResponsiveContainer width="100%" height={Math.max(220, retentionChartData.length * 50)}>
+              <BarChart data={retentionChartData} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.line} horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 11, fontFamily: "IBM Plex Mono" }} stroke={COLORS.inkSoft} unit="%" />
+                <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 12, fontFamily: "IBM Plex Sans" }} stroke={COLORS.inkSoft} />
+                <Tooltip formatter={(v) => v + "%"} contentStyle={{ fontFamily: "IBM Plex Sans", fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 12, fontFamily: "IBM Plex Sans" }} />
+                <Bar dataKey="nrr" name="Net Renewal Retention" fill={COLORS.steel} radius={[0, 3, 3, 0]} />
+                <Bar dataKey="grr" name="Gross Renewal Rate" fill={COLORS.amber} radius={[0, 3, 3, 0]} />
+                <Bar dataKey="yoyGrowth" name="YoY Growth (Existing)" fill={COLORS.green} radius={[0, 3, 3, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
         <div className="no-print" style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 16, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 12.5, color: COLORS.inkSoft, textTransform: "uppercase", letterSpacing: 0.4 }}>Territory</span>
@@ -1829,6 +2143,7 @@ Activity count this period: ${rep.activityTotal || "unknown"}`;
               overrides={metricOverrides[r.rep]}
               onSetOverride={(field, value) => setMetricOverride(r.rep, field, value)}
               onClearOverride={(field) => clearMetricOverride(r.rep, field)}
+              retention={(retentionMatrix[r.rep] && retentionMatrix[r.rep].annual) || DEFAULT_RETENTION_MATRIX.annual}
             />
           ))}
           {repList.length === 0 && (
